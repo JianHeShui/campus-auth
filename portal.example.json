@@ -1,0 +1,53 @@
+{
+  "auth_mode": "workflow",
+  "portal": {
+    "host": "10.0.0.1",
+    "port": 80,
+    "scheme": "http",
+    "entry_path": "/portal/entry/pc/authenticate;flowParams=undefined;from="
+  },
+  "endpoints": {
+    "query_terminal": "/eportal/adaptor/queryTerminalInfo",
+    "online_info": "/eportal/adaptor/getOnlineUserInfo",
+    "service_selection": "/eportal/network/serviceSelection",
+    "service_login": "/eportal/network/serviceLogin",
+    "operator_login": "/eportal/network/operatorLogin",
+    "set_service": "/eportal/network/setService",
+    "get_current_node": "/eportal/workFlow/getCurrentNode",
+    "update_session": "/eportal/workFlow/updateUserSession"
+  },
+  "session": {
+    "mode": "captive",
+    "field_name": "sessionId",
+    "flow_key": "portal_auth",
+    "redirect_probe_url": "http://www.baidu.com/"
+  },
+  "workflow": {
+    "auth_type": "account",
+    "result_value": "success",
+    "credential_fields": { "username": "userName", "password": "userPwd", "auth_type": "authType" },
+    "service_fields": { "session_id": "sessionId", "service": "serviceName" }
+  },
+  "simple_login": {
+    "login_path": "",
+    "method": "POST",
+    "username_field": "username",
+    "password_field": "password",
+    "extra_fields": {}
+  },
+  "online_check": {
+    "path_field": "data.portalOnlineUserInfo.result",
+    "success_value": "success"
+  },
+  "error_markers": {
+    "auth_fail": ["认证失败", "auth.fail"],
+    "account_invalid": ["上网账号已失效", "ACCOUNT_BINDING_INVALID"],
+    "terminal_limit": ["上网终端数已达上限", "EXCEED_LIMIT"],
+    "password_wrong": ["账号或密码", "密码不正确", "密码错误"],
+    "session_expired": ["请重新连网认证", "sessionId"]
+  },
+  "connectivity": {
+    "probe_hosts": ["www.baidu.com", "www.qq.com"],
+    "probe_port": 443
+  }
+}

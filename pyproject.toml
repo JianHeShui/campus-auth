@@ -1,0 +1,29 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "campus-auth"
+version = "0.1.0"
+description = "独立实现的锐捷 SAM+ 校园网自动认证工具（纯标准库，接口直连）"
+readme = "README.md"
+requires-python = ">=3.10"
+license = { text = "MIT" }
+authors = [{ name = "campus-auth contributors" }]
+keywords = ["campus-network", "ruijie", "authentication", "captive-portal"]
+classifiers = [
+    "Programming Language :: Python :: 3",
+    "Operating System :: Microsoft :: Windows",
+    "License :: OSI Approved :: MIT License",
+]
+# 纯标准库，无运行时第三方依赖
+dependencies = []
+
+[project.optional-dependencies]
+dev = []
+
+[project.scripts]
+campus-auth = "campus_auth.cli:main"
+
+[tool.setuptools]
+packages = ["campus_auth"]
