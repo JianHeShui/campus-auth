@@ -1049,6 +1049,15 @@ class ConfigWindow:
             else:
                 _set(data, key, value)
         data["auth_mode"] = self.mode_var.get()
+        # 门户地址以快速开始区的输入框为准（保证输入框与预览一致）
+        if self.address_var is not None:
+            addr = self.address_var.get().strip()
+            if addr:
+                host, port, scheme = _parse_address(addr)
+                if host:
+                    data["portal"]["host"] = host
+                    data["portal"]["port"] = port
+                    data["portal"]["scheme"] = scheme
         hosts = [h.strip() for h in data["connectivity"]["probe_hosts"].split(",") if h.strip()] \
             if isinstance(data["connectivity"].get("probe_hosts"), str) else data["connectivity"]["probe_hosts"]
         data["connectivity"]["probe_hosts"] = hosts or ["www.baidu.com", "www.qq.com"]
@@ -1070,6 +1079,9 @@ class ConfigWindow:
         """把 dict 填进表单。"""
         auth = data.get("auth_mode", "workflow")
         self.mode_var.set(auth)
+        # 同步门户地址输入框（快速开始区独立于 vars，否则会与预览不一致）
+        if self.address_var is not None:
+            self.address_var.set(str(data.get("portal", {}).get("host", "")))
         # 根据 auth_mode 同步模板下拉框，避免后续「一键生成」把模式覆盖回默认
         if self.template_var is not None:
             if auth == "cas":
