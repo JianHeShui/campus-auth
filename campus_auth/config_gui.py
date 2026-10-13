@@ -20,8 +20,8 @@ MODES = ("workflow", "cas", "simple")
 C = {
     "page": "#eaf1fb",       # 系统背景（淡浅蓝）
     "card": "#ffffff",       # 卡片
-    "primary": "#4f46e5",    # 靛蓝（高级感）
-    "primary_hover": "#4338ca",
+    "primary": "#3b82f6",    # 浅蓝
+    "primary_hover": "#2563eb",
     "text": "#111827",       # 主文字（深灰近黑）
     "muted": "#6b7280",      # 次要文字
     "border": "#dbe6f5",     # 分隔线（微蓝）
@@ -65,7 +65,8 @@ class RoundedButton(tk.Canvas):
 
     def __init__(self, parent, text, command=None, *, fill=C["card"], fg=C["text"],
                  border=C["border"], hover_fill="#eef0f4", hover_border=C["primary"],
-                 radius=10, bold=False, font_size=10, padx=24, height=36, gradient_to=None):
+                 radius=10, bold=False, font_size=10, padx=24, height=36, gradient_to=None,
+                 width=None):
         self._text = text
         self._command = command
         self._fill = fill
@@ -80,7 +81,7 @@ class RoundedButton(tk.Canvas):
 
         import tkinter.font as tkfont
         font_obj = tkfont.Font(family=F["ui"], size=font_size, weight="bold" if bold else "normal")
-        self._btn_w = font_obj.measure(text) + padx * 2
+        self._btn_w = width if width else (font_obj.measure(text) + padx * 2)
         self._btn_h = height
         super().__init__(parent, width=self._btn_w, height=self._btn_h, bg=C["page"],
                          highlightthickness=0, bd=0, cursor="hand2")
@@ -388,8 +389,8 @@ class ConfigWindow:
         self.advanced_visible = False
 
         root.title("校园网认证 · 门户配置")
-        root.geometry("1140x920")
-        root.minsize(1080, 860)
+        root.geometry("1120x720")
+        root.minsize(1080, 700)
         root.configure(bg=C["page"])
 
         self._apply_theme()
@@ -441,7 +442,7 @@ class ConfigWindow:
         except tk.TclError:
             pass
 
-        style.configure(".", font=(F["ui"], 10), background=C["page"], foreground=C["text"])
+        style.configure(".", font=(F["ui"], 11), background=C["page"], foreground=C["text"])
 
         # 卡片式面板
         style.configure("Card.TFrame", background=C["card"])
@@ -450,10 +451,10 @@ class ConfigWindow:
         # 标签
         style.configure("TLabel", background=C["page"], foreground=C["text"])
         style.configure("Card.TLabel", background=C["card"], foreground=C["text"])
-        style.configure("Muted.TLabel", background=C["page"], foreground=C["muted"], font=(F["ui"], 9))
-        style.configure("CardMuted.TLabel", background=C["card"], foreground=C["muted"], font=(F["ui"], 9))
+        style.configure("Muted.TLabel", background=C["page"], foreground=C["muted"], font=(F["ui"], 10))
+        style.configure("CardMuted.TLabel", background=C["card"], foreground=C["muted"], font=(F["ui"], 10))
         style.configure("Section.TLabel", background=C["card"], foreground=C["text"],
-                        font=(F["ui"], 11, "bold"))
+                        font=(F["ui"], 12, "bold"))
 
         # 输入框
         style.configure("TEntry", fieldbackground=C["input"], foreground=C["text"],
@@ -591,42 +592,40 @@ class ConfigWindow:
         ttk.Label(card, text="只需两步：选择门户类型，填写门户网页地址",
                   style="CardMuted.TLabel").grid(row=1, column=0, columnspan=4, sticky="w", pady=(2, 10))
 
-        # 第一行：类型 + 地址
+        # 门户类型（独占一行）
         ttk.Label(card, text="门户类型", style="Card.TLabel").grid(row=2, column=0, sticky="w", padx=(0, 10), pady=4)
         self.template_var = tk.StringVar(value=list(PORTAL_TEMPLATES.keys())[0])
         ttk.Combobox(card, textvariable=self.template_var, values=list(PORTAL_TEMPLATES.keys()),
-                     state="readonly", width=22).grid(row=2, column=1, sticky="w", pady=4)
+                     state="readonly", width=26).grid(row=2, column=1, sticky="w", pady=4)
 
-        ttk.Label(card, text="门户地址", style="Card.TLabel").grid(row=2, column=2, sticky="w", padx=(16, 10), pady=4)
+        # 门户地址（独占一行）
+        ttk.Label(card, text="门户地址", style="Card.TLabel").grid(row=3, column=0, sticky="w", padx=(0, 10), pady=4)
         self.address_var = tk.StringVar(value=DEFAULT_PROFILE["portal"]["host"])
-        address_entry = ttk.Entry(card, textvariable=self.address_var, width=30)
-        address_entry.grid(row=2, column=3, sticky="we", pady=4)
+        address_entry = ttk.Entry(card, textvariable=self.address_var, width=34)
+        address_entry.grid(row=3, column=1, columnspan=2, sticky="we", pady=4)
         _bind_context_menu(address_entry)
-        card.columnconfigure(3, weight=1)
-        RoundedButton(card, "自动获取", self._auto_fill_address, font_size=9).grid(
-            row=2, column=4, padx=(8, 0), pady=4)
+        card.columnconfigure(1, weight=1)
+        RoundedButton(card, "自动获取", self._auto_fill_address, font_size=9, width=88).grid(
+            row=3, column=3, padx=(8, 0), pady=4)
 
-        # 第二行：说明文字
-        ttk.Label(card, text="示例：10.0.0.1  或  portal.school.edu.cn  或  https://portal.school.edu.cn:8443",
-                  style="CardMuted.TLabel").grid(row=3, column=0, columnspan=2, sticky="w", pady=(4, 8))
-        # 按钮行：跨更多列，避免随窗口缩放被压缩导致文字裁剪
+        # 按钮行（独占一行）
         btn_row = tk.Frame(card, bg=C["card"])
-        btn_row.grid(row=3, column=2, columnspan=3, sticky="e", pady=(4, 8))
-        RoundedButton(btn_row, "自动探测类型", self._auto_detect, font_size=9).pack(side="left", padx=(0, 8))
+        btn_row.grid(row=4, column=0, columnspan=4, sticky="w", pady=(10, 2))
+        RoundedButton(btn_row, "自动探测类型", self._auto_detect, font_size=9, width=120).pack(side="left", padx=(0, 8))
         RoundedButton(btn_row, "一键生成配置", self._quick_generate,
                       fill=C["primary"], fg=C["white"], border=C["primary"],
                       hover_fill=C["primary_hover"], hover_border=C["primary_hover"], gradient_to=C["primary_hover"],
-                      bold=True, padx=34).pack(side="left")
+                      bold=True, width=150).pack(side="left")
 
-        # 第三行：开机自启
+        # 开机自启
         from .startup import startup_enabled
         self.autostart_var = tk.BooleanVar(value=startup_enabled())
-        tk.Checkbutton(card, text="开机自启（登录 Windows 后自动连接校园网）",
+        tk.Checkbutton(card, text="开机自启（登录 Windows 后自动连接）",
                        variable=self.autostart_var, command=self._toggle_autostart,
                        bg=C["card"], fg=C["text"], activebackground=C["card"],
                        activeforeground=C["text"], selectcolor=C["card"],
                        font=(F["ui"], 10), highlightthickness=0).grid(
-            row=4, column=0, columnspan=4, sticky="w", pady=(8, 0))
+            row=5, column=0, columnspan=4, sticky="w", pady=(4, 0))
 
     def _toggle_autostart(self) -> None:
         """开机自启开关：写入/删除注册表启动项。"""
@@ -847,40 +846,40 @@ class ConfigWindow:
         self.error_markers_text.grid(row=row, column=1, sticky="we", pady=4)
 
     def _build_footer(self) -> None:
+        # 底部按钮区：只含提示 + 按钮，固定底部，按钮固定大小
         footer = ttk.Frame(self.root, style="Page.TFrame")
-        # 固定到底部：无论上方内容多高，底部按钮区始终可见
         footer.pack(side="bottom", fill="x", padx=18, pady=(0, 14))
         self.footer_widget = footer
 
-        preview_card = ttk.Frame(footer, style="Card.TFrame", padding=14)
-        preview_card.pack(fill="x", pady=(0, 10))
-        preview_card.columnconfigure(0, weight=1)
-
-        head = ttk.Frame(preview_card, style="Card.TFrame")
-        head.grid(row=0, column=0, sticky="we")
-        ttk.Label(head, text="portal.json 预览", style="Section.TLabel").pack(side="left")
-        ttk.Label(head, text="（实时生成）", style="CardMuted.TLabel").pack(side="left", padx=(8, 0))
-
-        self.preview_text = self._make_text(preview_card, 9, mono=True)
-        self.preview_text.grid(row=1, column=0, sticky="we", pady=(8, 0))
-        scroll = SlimScrollbar(preview_card, self.preview_text, width=10, color="#b8bac0", bg=C["card"])
-        scroll.grid(row=1, column=1, sticky="ns", pady=(8, 0))
-        self.preview_text.configure(yscrollcommand=scroll.set)
-
-        tk.Label(footer, text="提示：「开始自动登录」会自动保存配置，无需手动点「保存 JSON」；「保存 JSON」仅用于只保存、不启动的情况。",
-                 bg=C["page"], fg=C["muted"], font=(F["ui"], 8)).pack(anchor="w", pady=(6, 2))
+        tk.Label(footer, text="提示：「开始自动登录」会自动保存配置，无需手动点「保存 JSON」。",
+                 bg=C["page"], fg=C["muted"], font=(F["ui"], 9)).pack(anchor="w", pady=(0, 10))
 
         buttons = tk.Frame(footer, bg=C["page"])
         buttons.pack(fill="x")
-        RoundedButton(buttons, "加载 JSON", self.load_file, padx=16).pack(side="left", padx=(0, 6))
-        RoundedButton(buttons, "刷新预览", self.refresh_preview, padx=16).pack(side="left", padx=6)
-        RoundedButton(buttons, "恢复默认", self.reset, padx=16).pack(side="left", padx=6)
-        RoundedButton(buttons, "重新输入账号密码", self._reenter_credentials, padx=16).pack(side="right", padx=(0, 6))
-        RoundedButton(buttons, "保存 JSON", self.save_file, padx=16).pack(side="right", padx=(0, 6))
-        RoundedButton(buttons, "开始自动登录", self._start_autologin,
-                      fill=C["primary"], fg=C["white"], border=C["primary"],
-                      hover_fill=C["primary_hover"], hover_border=C["primary_hover"], gradient_to=C["primary_hover"],
-                      bold=True, padx=18).pack(side="right")
+
+        # 第一行：次要操作（固定宽度按钮）
+        row1 = tk.Frame(buttons, bg=C["page"])
+        row1.pack(fill="x", pady=(0, 8))
+        b1 = RoundedButton(row1, "加载 JSON", self.load_file, width=130)
+        b2 = RoundedButton(row1, "恢复默认", self.reset, width=130)
+        b3 = RoundedButton(row1, "保存 JSON", self.save_file, width=130)
+        for i, b in enumerate([b1, b2, b3]):
+            b.grid(row=0, column=i, padx=(0, 8), sticky="w")
+            row1.grid_columnconfigure(i, minsize=b._btn_w)
+
+        # 第二行：主要操作（固定宽度，靠右）
+        row2 = tk.Frame(buttons, bg=C["page"])
+        row2.pack(fill="x")
+        row2.grid_columnconfigure(0, weight=1)  # 左侧留白伸缩
+        b4 = RoundedButton(row2, "重新输入账号密码", self._reenter_credentials, width=170)
+        b5 = RoundedButton(row2, "开始自动登录", self._start_autologin,
+                           fill=C["primary"], fg=C["white"], border=C["primary"],
+                           hover_fill=C["primary_hover"], hover_border=C["primary_hover"], gradient_to=C["primary_hover"],
+                           bold=True, width=170)
+        b4.grid(row=0, column=1, padx=(0, 8), sticky="e")
+        b5.grid(row=0, column=2, sticky="e")
+        row2.grid_columnconfigure(1, minsize=b4._btn_w)
+        row2.grid_columnconfigure(2, minsize=b5._btn_w)
 
     # ---- 开始自动登录 ----
 
