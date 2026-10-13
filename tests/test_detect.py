@@ -6,11 +6,10 @@ from campus_auth.detect import parse_address, probe_portal
 
 
 def _fake_get(responses: dict[str, tuple]):
-    """构造一个按路径返回响应的 _get 替身。"""
+    """构造一个按路径返回响应的 _get 替身（精确匹配）。"""
     def fake(host, port, scheme, path, timeout=6):
-        for key, result in responses.items():
-            if path == key or path.startswith(key):
-                return result
+        if path in responses:
+            return responses[path]
         return (None, {}, "")
     return fake
 

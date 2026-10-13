@@ -8,7 +8,7 @@ import time
 from . import __version__
 from .client import AuthError, Client, Credentials
 from .config import ConfigError, load_credentials, save_credentials
-from .network import NetworkAdapter, enumerate_interfaces, pick_adapter
+from .network import NetworkAdapter, enumerate_interfaces, pick_adapter, trigger_windows_ncsi_refresh
 from .portal import ProfileError, load_profile
 from .state import AuthState, RetryPolicy
 

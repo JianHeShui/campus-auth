@@ -14,10 +14,12 @@ from __future__ import annotations
 import ctypes
 import http.client
 import ipaddress
+import re
 import socket
 import ssl
 import struct
 import sys
+import urllib.parse
 from dataclasses import dataclass
 from typing import Iterator, Sequence
 
@@ -244,3 +246,62 @@ def https_reachable(host: str, *, adapter: NetworkAdapter | None = None,
                 conn.close()
             except Exception:
                 pass
+
+
+def trigger_windows_ncsi_refresh(timeout: float = 5.0) -> None:
+    """认证成功后主动访问 Windows NCSI 检测点，帮助刷新网络状态指示器。
+
+    校园网 captive portal 会劫持微软的连通性检测请求，导致 Windows 任务栏
+    仍显示「需要操作/无 Internet」。接口认证成功后网络实际已通，这里主动访问
+    一次微软检测点（www.msftconnecttest.com），促使 Windows 尽快判定「已连接」。
+    失败静默（不影响认证主流程）。
+    """
+    try:
+        conn = http.client.HTTPConnection("www.msftconnecttest.com", 80, timeout=timeout)
+        conn.request("GET", "/connecttest.txt")
+        resp = conn.getresponse()
+        resp.read()
+        conn.close()
+    except (OSError, ValueError, http.client.HTTPException):
+        pass
+
+
+def detect_portal_host(probe_url: str = "http://www.baidu.com/",
+                       adapter: NetworkAdapter | None = None,
+                       timeout: float = 5.0) -> str | None:
+    """断网时访问外网，从网关劫持中自动提取门户主机地址。
+
+    校园网 captive portal 两种劫持方式都支持：
+    - 302 重定向：从 Location 头提取主机名；
+    - 200 + JS 跳转：从响应体 location.href="http://门户/..." 提取主机名。
+    若已联网（正常 200、无劫持），返回 None。
+    """
+    parts = urllib.parse.urlsplit(probe_url)
+    host = parts.hostname or ""
+    path = parts.path or "/"
+    if not host:
+        return None
+    try:
+        conn = BoundHTTPConnection(host, 80, adapter=adapter, timeout=timeout)
+        conn.request("GET", path, headers={"User-Agent": "campus-auth/0.1", "Connection": "close"})
+        response = conn.getresponse()
+        location = response.getheader("Location", "")
+        body = response.read().decode("utf-8", errors="replace")
+        conn.close()
+    except (OSError, ValueError, http.client.HTTPException):
+        return None
+
+    # 1) 302 重定向的 Location 头
+    if location:
+        loc = urllib.parse.urlsplit(location)
+        if loc.hostname:
+            return loc.hostname
+
+    # 2) 200 + JS location.href 跳转（H3C/深澜等网关）
+    m = re.search(r'location\.href\s*=\s*["\']([^"\']+)["\']', body)
+    if m:
+        loc = urllib.parse.urlsplit(m.group(1))
+        if loc.hostname:
+            return loc.hostname
+
+    return None

@@ -56,7 +56,7 @@ def probe_portal(address: str, timeout: float = 6) -> dict:
     evidence: list[str] = []
 
     # 1) 根路径
-    status, headers, _ = _get(host, port, scheme, "/", timeout)
+    status, headers, root_body = _get(host, port, scheme, "/", timeout)
     evidence.append(f"GET / → {status if status else '不可达'}")
     location = headers.get("Location", "") if headers else ""
 
@@ -77,19 +77,32 @@ def probe_portal(address: str, timeout: float = 6) -> dict:
     if eportal_status:
         evidence.append(f"GET /eportal/adaptor/getOnlineUserInfo → {eportal_status}")
 
+    # 6) 华三 CAS 登录组件（/sso-public/cas-login-new/，静态资源，是 CAS 认证的确切标志）
+    cas_status, _, _ = _get(host, port, scheme, "/sso-public/cas-login-new/main.js", timeout)
+    if cas_status:
+        evidence.append(f"GET /sso-public/cas-login-new/main.js → {cas_status}")
+
     # 特征汇总
-    all_text = " ".join([portal, config, srun, eportal_api]).lower()
+    all_text = " ".join([root_body, portal, config, srun, eportal_api]).lower()
     has_session_guard = "required request parameter" in eportal_api.lower() or \
                         "sessionid" in eportal_api.lower()
 
     # ---- 分类 ----
+    # 华三 CAS SSO：存在 CAS 登录组件（优先级最高，因为常与锐捷工作流共存）
+    if cas_status:
+        return {
+            "recognized": True, "type": "华三 CAS SSO", "template": "华三 CAS SSO（加密）",
+            "mode": "cas",
+            "evidence": evidence + ["检测到 CAS 登录组件 /sso-public/cas-login-new/"],
+            "message": "检测到华三 CAS SSO 门户，已按 CAS 加密模式填充。",
+        }
     # 锐捷 SAM+：config.js 品牌/聚合层 + SPA 的 SSO 平台标记 + 接口会话门禁
     if ("锐捷" in config or "smpdomain" in config or "enablecompliance" in config
-            or "__platform_sso__" in portal.lower() or "cas-sso" in portal.lower()):
+            or "__platform_sso__" in portal.lower()):
         return {
             "recognized": True, "type": "锐捷 SAM+", "template": "锐捷 SAM+（工作流）",
             "mode": "workflow",
-            "evidence": evidence + ["config.js 含锐捷/聚合层标记", "SPA 含 CAS-SSO 平台标记"],
+            "evidence": evidence + ["config.js 含锐捷/聚合层标记", "SPA 含 SSO 平台标记"],
             "message": "检测到锐捷 SAM+ 门户，已按工作流模式填充。",
         }
     # 深澜 Srun：认证 URL 参数 + eportal/index.jsp 入口

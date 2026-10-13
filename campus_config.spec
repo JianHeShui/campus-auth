@@ -6,18 +6,25 @@
     pyinstaller --noconfirm --clean campus_config.spec
 产物：dist/campus-auth/ 目录（campus-auth.exe + _internal/）
 """
+from PyInstaller.utils.hooks import collect_all
+
+# 显式收集 pycryptodome（Crypto）的模块 + C 扩展（.pyd），否则 .pyd 不会被打包
+_crypto_datas, _crypto_binaries, _crypto_hidden = collect_all("Crypto")
+
 a = Analysis(
     ["main.py"],
     pathex=["."],
-    binaries=[],
-    datas=[("tray.ico", ".")],  # 打进 _internal，托盘运行时从 _MEIPASS 加载
+    binaries=_crypto_binaries,
+    datas=[("tray.ico", ".")] + _crypto_datas,  # 打进 _internal，托盘运行时从 _MEIPASS 加载
     hiddenimports=[
         "campus_auth.config_gui",
         "campus_auth.tray",
         "campus_auth.startup",
         "campus_auth.detect",
         "campus_auth.shortcut",
-    ],
+        "campus_auth.cas",
+        "campus_auth.crypto",
+    ] + _crypto_hidden,
     hookspath=[],
     hooksconfig={},
     runtime_hooks=[],

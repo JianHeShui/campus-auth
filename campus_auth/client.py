@@ -7,12 +7,46 @@ from __future__ import annotations
 
 import http.client
 import json
+import re
+import time
 import urllib.parse
 from dataclasses import dataclass, field
+from pathlib import Path
 
 from .network import BoundHTTPConnection, NetworkAdapter, https_reachable
 from .portal import PortalProfile
 from .state import AuthState
+
+# 认证调试日志：记录每次认证请求/响应，用于排查认证链路（账号密码已脱敏）
+_AUTH_DEBUG_LOG = Path.home() / ".campus-auth" / "auth-debug.log"
+_SENSITIVE_KEYS = ("username", "userName", "password", "userPwd", "userpwd", "passwd")
+
+
+def _redact_body(body) -> dict:
+    """脱敏请求/响应中的账号密码字段。"""
+    if not isinstance(body, dict):
+        return body
+    out = dict(body)
+    for key in _SENSITIVE_KEYS:
+        if key in out:
+            out[key] = "***"
+    if isinstance(out.get("updateSessionData"), dict):
+        ud = dict(out["updateSessionData"])
+        for key in _SENSITIVE_KEYS:
+            if key in ud:
+                ud[key] = "***"
+        out["updateSessionData"] = ud
+    return out
+
+
+def _auth_log(msg: str) -> None:
+    """追加写认证调试日志（失败静默，不影响认证）。"""
+    try:
+        _AUTH_DEBUG_LOG.parent.mkdir(parents=True, exist_ok=True)
+        with open(_AUTH_DEBUG_LOG, "a", encoding="utf-8") as f:
+            f.write(f"[{time.strftime('%Y-%m-%d %H:%M:%S')}] {msg}\n")
+    except OSError:
+        pass
 
 
 class AuthError(RuntimeError):
@@ -57,11 +91,22 @@ def _deep_get(mapping: dict, dotted_path: str):
     return current
 
 
-def _extract_session_id(url: str, field_name: str) -> str | None:
-    query = urllib.parse.urlsplit(url).query
+def _extract_session_id(text: str, field_name: str) -> str | None:
+    """从 URL 查询串或 HTML/JSON 文本中提取 sessionId 值。"""
+    # 1) URL 查询参数
+    query = urllib.parse.urlsplit(text).query
     params = urllib.parse.parse_qs(query)
     values = params.get(field_name)
-    return values[0] if values else None
+    if values:
+        return values[0]
+    # 2) 文本里的 "sessionId":"xxx" / sessionId=xxx / sessionId='xxx'
+    for pat in (
+        rf'["\']?{field_name}["\']?\s*[:=]\s*["\']([^"\']+)["\']',
+    ):
+        m = re.search(pat, text)
+        if m:
+            return m.group(1)
+    return None
 
 
 class Client:
@@ -96,11 +141,17 @@ class Client:
         if payload is not None:
             headers["Content-Type"] = "application/json"
         try:
+            _auth_log(f"{method} {full_path}")
+            if body is not None:
+                _auth_log(f"  req: {json.dumps(_redact_body(body), ensure_ascii=False)}")
             conn.request(method, full_path, body=payload, headers=headers)
             response = conn.getresponse()
             data = response.read()
-            return response.status, _parse_json(data)
+            parsed = _parse_json(data)
+            _auth_log(f"  resp {response.status}: {json.dumps(_redact_body(parsed), ensure_ascii=False)[:800]}")
+            return response.status, parsed
         except (OSError, http.client.HTTPException) as exc:
+            _auth_log(f"  ERROR: {exc}")
             raise AuthError(f"门户请求失败: {exc}") from exc
         finally:
             conn.close()
@@ -140,12 +191,24 @@ class Client:
             response = conn.getresponse()
             status = response.status
             location = response.getheader("Location", "")
-            response.read()
+            raw_body = response.read()
             conn.close()
-        except (OSError, http.client.HTTPException):
+        except (OSError, http.client.HTTPException) as exc:
+            _auth_log(f"captive探测 {probe_url} -> 连接失败: {exc}")
             return None
+        body_text = raw_body.decode("utf-8", errors="replace")
+        _auth_log(f"captive探测 {probe_url} -> HTTP {status} Location={location!r}")
+        _auth_log(f"  响应体前800字节: {body_text[:800]!r}")
         if status in (301, 302, 303, 307, 308) and location and self.profile.host in location:
-            return _extract_session_id(location, self.profile.session_field)
+            sid = _extract_session_id(location, self.profile.session_field)
+            _auth_log(f"  解析 sessionId: {sid!r}")
+            return sid
+        # 透明代理/DNS 劫持：返回 200 认证页，尝试从 HTML 里找 sessionId
+        sid = _extract_session_id(body_text, self.profile.session_field)
+        if sid:
+            _auth_log(f"  从响应体解析 sessionId: {sid!r}")
+            return sid
+        _auth_log("  未取到 sessionId（非重定向，响应体也无 sessionId）")
         return None
 
     # ---- 工作流认证 ----
@@ -227,7 +290,11 @@ class Client:
         return {"ok": False, "message": f"服务确认失败: {data.get('message', switch)}", "body": resp}
 
     def authenticate(self, credentials: Credentials, session_id: str | None = None) -> AuthResult:
-        """完整认证入口，按画像的 auth_mode 分派到工作流或通用登录。"""
+        """完整认证入口，按画像的 auth_mode 分派到工作流/CAS/通用登录。"""
+        # CAS 模式不需要 sessionId，直接走 CAS 认证
+        if self.profile.auth_mode == "cas":
+            return self._authenticate_cas(credentials)
+
         session_id = session_id or self.acquire_session()
 
         if session_id and self.check_online(session_id):
@@ -265,6 +332,28 @@ class Client:
         if self.check_online(session_id):
             return AuthResult(AuthState.ONLINE, "连网成功")
         return AuthResult(AuthState.PENDING, "已提交认证，在线状态待确认", detail=submitted.get("body", {}))
+
+    def _authenticate_cas(self, credentials: Credentials) -> AuthResult:
+        """华三 CAS SSO：访问认证页 → AES 加密 → POST 登录。"""
+        if self._internet_ok():
+            return AuthResult(AuthState.ONLINE, "外网可达，无需认证")
+        from .cas import authenticate_cas
+        result = authenticate_cas(self.profile, credentials, self.adapter, self.timeout)
+        if result.get("ok"):
+            # CAS 登录成功后复核联网状态
+            if self._internet_ok():
+                return AuthResult(AuthState.ONLINE, "连网成功")
+            return AuthResult(AuthState.PENDING, "CAS 认证已提交，在线状态待确认", detail=result.get("detail", {}))
+        msg = result.get("message", "CAS 认证失败")
+        detail = result.get("detail", {})
+        body = detail.get("body", "") if isinstance(detail, dict) else ""
+        # 账号或密码错误（响应体含明确提示）
+        if any(k in body for k in ("用户不存在或者密码错误", "密码错误", "密码不正确", "账号或密码")):
+            return AuthResult(AuthState.ERROR, "账号或密码错误", detail={"category": "password_wrong"})
+        # 网络抖动（连接被重置/地址无效等）→ PENDING 重试，而非长退避
+        if any(k in msg for k in ("WinError", "10049", "10054", "10065", "连接", "地址无效", "超时", "timeout")):
+            return AuthResult(AuthState.PENDING, msg, detail=result.get("detail", {}))
+        return self._classify(result.get("detail", {}), msg)
 
     def _authenticate_simple(self, credentials: Credentials, session_id: str | None) -> AuthResult:
         """通用登录：把账号密码直接 POST 到登录接口，再复核联网状态。"""

@@ -68,8 +68,6 @@ class Launcher:
                  fg=C["text"], font=(F["ui"], 8)).pack(side="left")
         tk.Label(star_row, text="star", bg=C["card"], fg="#f5a623",
                  font=(F["ui"], 8, "bold")).pack(side="left")
-        tk.Label(star_row, text="，谢谢喵", bg=C["card"], fg="#ff6b9d",
-                 font=(F["ui"], 8)).pack(side="left")
         tk.Label(footer, text="免责声明：本软件完全免费，仅供学习交流，用于自动完成本人账号在所在校园网的认证。",
                  bg=C["card"], fg=C["muted"], font=(F["ui"], 7), wraplength=480,
                  justify="left").pack(anchor="w")

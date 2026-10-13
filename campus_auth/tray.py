@@ -276,7 +276,28 @@ class TrayIcon:
             _user32.DispatchMessageW(ctypes.byref(msg))
 
 
+_TRAY_MUTEX_NAME = "CampusAuthTray"
+_TRAY_MUTEX_HANDLE = None
+
+
+def _acquire_tray_single_instance() -> bool:
+    """托盘单实例：返回 True 表示本次是首个托盘实例。"""
+    global _TRAY_MUTEX_HANDLE
+    kernel32 = ctypes.windll.kernel32
+    handle = kernel32.CreateMutexW(None, False, _TRAY_MUTEX_NAME)
+    if not handle:
+        return True
+    if kernel32.GetLastError() == 183:  # ERROR_ALREADY_EXISTS
+        kernel32.CloseHandle(handle)
+        return False
+    _TRAY_MUTEX_HANDLE = handle
+    return True
+
+
 def run_tray() -> int:
+    # 单实例：已有托盘在运行则直接退出，避免多次双击产生重复进程
+    if not _acquire_tray_single_instance():
+        return 0
     tray = TrayIcon()
     tray.run()
     return 0
