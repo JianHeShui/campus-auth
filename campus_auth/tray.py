@@ -298,6 +298,13 @@ def run_tray() -> int:
     # 单实例：已有托盘在运行则直接退出，避免多次双击产生重复进程
     if not _acquire_tray_single_instance():
         return 0
+    # 已配置账号密码时自动开始守护循环，无需手动点「开始自动登录」
+    try:
+        from .config import load_credentials
+        load_credentials()
+        start_watch()
+    except Exception:
+        pass  # 未配置凭据或启动失败则静默跳过，等用户手动开始
     tray = TrayIcon()
     tray.run()
     return 0

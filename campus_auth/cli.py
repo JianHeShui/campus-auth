@@ -97,6 +97,16 @@ def cmd_configure(args: argparse.Namespace) -> int:
 
 def cmd_watch(args: argparse.Namespace) -> int:
     """静默守护：按退避策略周期重试。"""
+    # 单实例：已有守护循环在运行则直接退出，避免重复进程
+    import ctypes
+    kernel32 = ctypes.windll.kernel32
+    mutex = kernel32.CreateMutexW(None, False, "CampusAuthWatch")
+    if not mutex:
+        return 1
+    if kernel32.GetLastError() == 183:  # ERROR_ALREADY_EXISTS
+        kernel32.CloseHandle(mutex)
+        return 0
+
     # 开机自启模式：先延时，等网卡与网络就绪
     if getattr(args, "startup", False) and getattr(args, "delay", 0) > 0:
         time.sleep(args.delay)

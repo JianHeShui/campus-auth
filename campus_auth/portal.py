@@ -126,6 +126,15 @@ def deep_merge(base: dict, override: dict) -> dict:
 def load_profile(path: str | Path | None) -> PortalProfile:
     """加载画像：默认值 ← portal.json（若存在）。"""
     data: dict[str, Any] = DEFAULT_PROFILE
+    # path 为 None 时，自动读工具目录下的 portal.json（打包后为 exe 所在目录，源码为项目根）
+    if path is None:
+        import sys
+        if getattr(sys, "frozen", False):
+            candidate = Path(sys.executable).resolve().parent / "portal.json"
+        else:
+            candidate = Path(__file__).resolve().parent.parent / "portal.json"
+        if candidate.exists():
+            path = candidate
     if path is not None:
         file = Path(path)
         if file.exists():
