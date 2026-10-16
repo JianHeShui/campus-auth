@@ -403,7 +403,9 @@ class Client:
         for host in self.profile.probe_hosts:
             if https_reachable(host, adapter=self.adapter, timeout=5, port=self.profile.probe_port):
                 return True
-        return False
+        # 校园网 DNS 故障时回退到 IP 直连探测，避免误判「未联网」
+        from .network import internet_ok_by_ip
+        return internet_ok_by_ip(adapter=self.adapter, timeout=5)
 
     def _log(self, message: str) -> None:
         pass  # 预留：CLI 可注入日志回调

@@ -248,6 +248,33 @@ def https_reachable(host: str, *, adapter: NetworkAdapter | None = None,
                 pass
 
 
+# 公网探测 IP（DNS 服务器 IP，稳定；用于在校园网 DNS 故障时绕开域名解析）
+PUBLIC_PROBE_IPS = ("223.5.5.5", "119.29.29.29", "180.76.76.76", "114.114.114.114")
+
+
+def internet_ok_by_ip(adapter: NetworkAdapter | None = None, timeout: float = 3.0) -> bool:
+    """HTTP 访问公网 IP 判断是否已联网（完全不依赖 DNS）。
+
+    未认证时网关会劫持 HTTP 流量返回 location.href 跳转（视为未联网）；
+    返回正常响应（无劫持）则视为已联网；全部超时/拒绝时保守视为未联网。
+    """
+    for ip in PUBLIC_PROBE_IPS:
+        try:
+            conn = BoundHTTPConnection(ip, 80, adapter=adapter, timeout=timeout)
+            conn.request("GET", "/", headers={"User-Agent": "campus-auth/0.1", "Connection": "close"})
+            resp = conn.getresponse()
+            body = resp.read().decode("utf-8", errors="replace")
+            conn.close()
+            # 被网关劫持（含跳转到认证页）→ 未认证
+            if "location.href" in body or "eportal" in body.lower():
+                return False
+            # 正常响应（未被劫持）→ 已联网
+            return True
+        except (OSError, ValueError, http.client.HTTPException):
+            continue
+    return False
+
+
 def trigger_windows_ncsi_refresh(timeout: float = 5.0) -> None:
     """认证成功后主动访问 Windows NCSI 检测点，帮助刷新网络状态指示器。
 

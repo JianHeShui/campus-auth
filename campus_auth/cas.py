@@ -129,15 +129,33 @@ def authenticate_cas(profile, credentials, adapter: NetworkAdapter | None,
     probe_parts = urllib.parse.urlsplit(probe_url)
     probe_host = probe_parts.hostname or "www.baidu.com"
     probe_path = probe_parts.path or "/"
-    try:
-        conn = BoundHTTPConnection(probe_host, 80, adapter=adapter, timeout=timeout)
-        conn.request("GET", probe_path, headers=headers)
-        resp = conn.getresponse()
-        probe_body = resp.read().decode("utf-8", errors="replace")
-        conn.close()
-    except (OSError, http.client.HTTPException) as exc:
-        _cas_log(f"CAS captive探测失败: {exc}")
-        return {"ok": False, "message": f"captive探测失败: {exc}", "detail": {}}
+
+    # 探测目标：优先域名，DNS 故障时回退到公网 IP 直连（网关照样劫持 IP 的 HTTP 流量）
+    probe_targets = [(probe_host, probe_path)]
+    probe_targets += [(ip, "/") for ip in ("223.5.5.5", "119.29.29.29", "180.76.76.76", "114.114.114.114")]
+
+    probe_body = ""
+    last_exc: Exception | None = None
+    for target_host, target_path in probe_targets:
+        try:
+            conn = BoundHTTPConnection(target_host, 80, adapter=adapter, timeout=timeout)
+            conn.request("GET", target_path, headers=headers)
+            resp = conn.getresponse()
+            body = resp.read().decode("utf-8", errors="replace")
+            conn.close()
+            probe_body = body
+            # 找到含网关劫持跳转（location.href）的响应即可停
+            if "location.href" in body or "location=\"" in body or "eportal/index.jsp" in body:
+                _cas_log(f"CAS captive探测(目标={target_host}) 命中网关劫持")
+                break
+        except (OSError, http.client.HTTPException) as exc:
+            last_exc = exc
+            _cas_log(f"CAS captive探测 {target_host} 失败: {exc}")
+            continue
+
+    if not probe_body:
+        _cas_log(f"CAS captive探测全部失败: {last_exc}")
+        return {"ok": False, "message": f"captive探测失败: {last_exc}", "detail": {}}
 
     m = re.search(r'location\.href\s*=\s*["\']([^"\']+)["\']', probe_body)
     redirect_url = m.group(1) if m else ""
