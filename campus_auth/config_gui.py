@@ -10,28 +10,41 @@ from pathlib import Path
 from tkinter import filedialog, messagebox, ttk
 
 from .portal import DEFAULT_PROFILE, deep_merge
+from .theme import C as _TC, MOTION as _MOTION, R as _TR, S as _TS
 
 # 认证引擎模式
 MODES = ("workflow", "cas", "simple")
 
 # --------------------------------------------------------------------------
-# 配色与字体（简约现代 / iOS 系统风格）
+# 配色与字体（高级中性灰 × 明亮简约，Token 见 theme.py）
+# 浅灰底 + 白卡片 + 1px 发丝描边 + 单一强调蓝 + 大留白；无阴影、无渐变。
 # --------------------------------------------------------------------------
 C = {
-    "page": "#eaf1fb",       # 系统背景（淡浅蓝）
-    "card": "#ffffff",       # 卡片
-    "primary": "#3b82f6",    # 浅蓝
-    "primary_hover": "#2563eb",
-    "text": "#111827",       # 主文字（深灰近黑）
-    "muted": "#6b7280",      # 次要文字
-    "border": "#dbe6f5",     # 分隔线（微蓝）
-    "input": "#ffffff",      # 输入框背景
-    "tab": "#eaf1fb",        # 未选中标签
-    "white": "#ffffff",
+    "page": _TC["n25"],          # 窗口底色（比纯白略暗，让白卡片浮起来）
+    "card": _TC["n0"],           # 卡片 / 输入框表面
+    "primary": _TC["accent"],    # 唯一强调色
+    "primary_hover": _TC["accent_hover"],
+    "primary_active": _TC["accent_active"],
+    "accent_subtle": _TC["accent_subtle"],
+    "text": _TC["n700"],         # 正文默认色
+    "title": _TC["n800"],        # 标题
+    "muted": _TC["n500"],        # 辅助文字
+    "faint": _TC["n400"],        # 占位符 / 禁用
+    "border": _TC["n200"],       # 默认 1px 描边
+    "border_strong": _TC["n300"],  # hover 描边
+    "hairline": _TC["n150"],     # 分隔线
+    "input": _TC["n0"],
+    "tab": _TC["n25"],
+    "subtle": _TC["n50"],        # 次级面板 / hover 底
+    "pressed": _TC["n100"],      # 按下底 / 禁用底
+    "danger": _TC["danger"],
+    "success": _TC["success"],
+    "warning": _TC["warning"],
+    "white": _TC["white"],
 }
 F = {
     "ui": "Microsoft YaHei UI",
-    "mono": "Consolas",
+    "mono": "Cascadia Mono",
 }
 
 
@@ -61,21 +74,21 @@ def _blend(c1: str, c2: str, t: float) -> str:
 
 
 class RoundedButton(tk.Canvas):
-    """圆角按钮：Canvas 自绘，支持 hover 与点击。"""
+    """圆角按钮：Canvas 自绘，支持 hover 与点击（纯色 + 1px 描边，无渐变）。"""
 
     def __init__(self, parent, text, command=None, *, fill=C["card"], fg=C["text"],
-                 border=C["border"], hover_fill="#eef0f4", hover_border=C["primary"],
-                 radius=10, bold=False, font_size=10, padx=24, height=36, gradient_to=None,
+                 border=C["border"], hover_fill=None, hover_border=C["primary"],
+                 radius=8, bold=False, font_size=10, padx=24, height=32, gradient_to=None,
                  width=None):
         self._text = text
         self._command = command
         self._fill = fill
         self._fg = fg
         self._border = border
-        self._hover_fill = hover_fill
+        self._hover_fill = hover_fill if hover_fill else (C["subtle"] if fill == C["card"] else fill)
         self._hover_border = hover_border
         self._radius = radius
-        self._gradient_to = gradient_to
+        self._gradient_to = gradient_to  # 保留参数兼容旧调用，本方案不使用渐变
         self._font = (F["ui"], font_size, "bold" if bold else "normal")
         self._hovered = False
 
@@ -108,20 +121,9 @@ class RoundedButton(tk.Canvas):
             w = self._btn_w
         if h <= 1:
             h = self._btn_h
-        if self._gradient_to:
-            # 垂直渐变填充（上浅下深）
-            steps = 16
-            for i in range(steps):
-                t = i / (steps - 1)
-                color = _blend(self._fill_now(), self._gradient_to, t)
-                y1 = 1 + (h - 2) * i / steps
-                y2 = 1 + (h - 2) * (i + 1) / steps
-                self.create_rectangle(1, y1, w - 1, y2, fill=color, outline=color)
-            _round_rect(self, 1, 1, w - 1, h - 1, self._radius,
-                        fill="", outline=self._border_now(), width=1)
-        else:
-            _round_rect(self, 1, 1, w - 1, h - 1, self._radius,
-                        fill=self._fill_now(), outline=self._border_now(), width=1)
+        # 纯色填充 + 1px 描边（本方案不使用渐变/阴影）
+        _round_rect(self, 0.5, 0.5, w - 0.5, h - 0.5, self._radius,
+                    fill=self._fill_now(), outline=self._border_now(), width=1)
         self.create_text(w // 2, h // 2, text=self._text, fill=self._fg, font=self._font)
 
     def _on_configure(self, event) -> None:
@@ -146,7 +148,9 @@ class SlimScrollbar(tk.Canvas):
     """微信式细窄滚动条：圆角胶囊滑块，贴右边缘，无原生轨道/箭头。"""
 
     def __init__(self, parent, text_widget: tk.Text, *, width: int = 6,
-                 color: str = "#c8c9cc", bg: str = "#ffffff"):
+                 color: str = None, bg: str = None):
+        color = color or C["border_strong"]
+        bg = bg or C["card"]
         super().__init__(parent, width=width, bg=bg, highlightthickness=0, bd=0,
                          cursor="hand2")
         self._text = text_widget
@@ -442,64 +446,86 @@ class ConfigWindow:
         except tk.TclError:
             pass
 
-        style.configure(".", font=(F["ui"], 11), background=C["page"], foreground=C["text"])
+        style.configure(".", font=(F["ui"], 10), background=C["page"], foreground=C["text"],
+                        borderwidth=0, focuscolor=C["page"])  # focuscolor=底色即隐藏系统虚线环
 
         # 卡片式面板
         style.configure("Card.TFrame", background=C["card"])
         style.configure("Page.TFrame", background=C["page"])
 
-        # 标签
+        # 标签（靠字重与色阶分主次，不堆字号）
         style.configure("TLabel", background=C["page"], foreground=C["text"])
         style.configure("Card.TLabel", background=C["card"], foreground=C["text"])
-        style.configure("Muted.TLabel", background=C["page"], foreground=C["muted"], font=(F["ui"], 10))
-        style.configure("CardMuted.TLabel", background=C["card"], foreground=C["muted"], font=(F["ui"], 10))
-        style.configure("Section.TLabel", background=C["card"], foreground=C["text"],
+        style.configure("Muted.TLabel", background=C["page"], foreground=C["muted"], font=(F["ui"], 9))
+        style.configure("CardMuted.TLabel", background=C["card"], foreground=C["muted"], font=(F["ui"], 9))
+        style.configure("Section.TLabel", background=C["card"], foreground=C["title"],
                         font=(F["ui"], 12, "bold"))
 
-        # 输入框
+        # 输入框（高 32 = 行高 17 + padding 6×2 + border 1×2）
         style.configure("TEntry", fieldbackground=C["input"], foreground=C["text"],
                         bordercolor=C["border"], lightcolor=C["border"], darkcolor=C["border"],
-                        padding=7)
-        style.map("TEntry", bordercolor=[("focus", C["primary"])], lightcolor=[("focus", C["primary"])],
-                  darkcolor=[("focus", C["primary"])])
+                        padding=(10, 6), relief="flat", borderwidth=1)
+        style.map("TEntry",
+                  bordercolor=[("focus", C["primary"]), ("active", C["border_strong"])],
+                  lightcolor=[("focus", C["primary"]), ("active", C["border_strong"])],
+                  darkcolor=[("focus", C["primary"]), ("active", C["border_strong"])],
+                  fieldbackground=[("disabled", C["subtle"])],
+                  foreground=[("disabled", C["faint"])])
 
-        # 下拉框
+        # 下拉框（readonly 态必须单独 map，否则会出现灰色系统底）
         style.configure("TCombobox", fieldbackground=C["input"], foreground=C["text"],
                         background=C["white"], bordercolor=C["border"], lightcolor=C["border"],
-                        darkcolor=C["border"], padding=6)
+                        darkcolor=C["border"], padding=(10, 6), relief="flat", borderwidth=1,
+                        arrowcolor=C["muted"])
+        style.map("TCombobox",
+                  fieldbackground=[("readonly", C["input"]), ("disabled", C["subtle"])],
+                  foreground=[("disabled", C["faint"])],
+                  bordercolor=[("focus", C["primary"]), ("active", C["border_strong"])],
+                  lightcolor=[("focus", C["primary"]), ("active", C["border_strong"])],
+                  darkcolor=[("focus", C["primary"]), ("active", C["border_strong"])],
+                  arrowcolor=[("disabled", C["faint"])])
 
-        # 按钮
+        # 次级按钮（lightcolor/darkcolor 必须与底同色，否则留 3D 斜角）
         style.configure("TButton", background=C["card"], foreground=C["text"],
-                        bordercolor=C["border"], lightcolor=C["border"], darkcolor=C["border"],
-                        padding=(16, 8), font=(F["ui"], 10))
+                        bordercolor=C["border"], lightcolor=C["card"], darkcolor=C["card"],
+                        padding=(12, 6), font=(F["ui"], 10), relief="flat", borderwidth=1)
         style.map("TButton",
-                  background=[("active", "#f2f2f7"), ("pressed", "#e9e9ee")],
-                  bordercolor=[("active", C["primary"])], lightcolor=[("active", C["primary"])],
-                  darkcolor=[("active", C["primary"])])
+                  background=[("active", C["subtle"]), ("pressed", C["pressed"])],
+                  bordercolor=[("active", C["border_strong"]), ("pressed", C["border_strong"])],
+                  lightcolor=[("active", C["subtle"]), ("pressed", C["pressed"])],
+                  darkcolor=[("active", C["subtle"]), ("pressed", C["pressed"])],
+                  foreground=[("disabled", C["faint"])])
 
-        # 主按钮（蓝色填充）
+        # 主按钮（唯一强调色）
         style.configure("Primary.TButton", background=C["primary"], foreground=C["white"],
-                        bordercolor=C["primary"], padding=(20, 9), font=(F["ui"], 10, "bold"))
+                        bordercolor=C["primary"], lightcolor=C["primary"], darkcolor=C["primary"],
+                        padding=(16, 7), font=(F["ui"], 10, "bold"), relief="flat", borderwidth=1)
         style.map("Primary.TButton",
-                  background=[("active", C["primary_hover"]), ("pressed", C["primary_hover"])],
-                  bordercolor=[("active", C["primary_hover"])])
+                  background=[("active", C["primary_hover"]), ("pressed", C["primary_active"])],
+                  bordercolor=[("active", C["primary_hover"]), ("pressed", C["primary_active"])],
+                  lightcolor=[("active", C["primary_hover"]), ("pressed", C["primary_active"])],
+                  darkcolor=[("active", C["primary_hover"]), ("pressed", C["primary_active"])])
 
-        # 标签页
+        # 标签页（选中：浅强调底 + 主色文字）
         style.configure("TNotebook", background=C["page"], borderwidth=0, tabmargins=(0, 8, 0, 0))
         style.configure("TNotebook.Tab", background=C["tab"], foreground=C["muted"],
-                        padding=(18, 9), font=(F["ui"], 10))
+                        padding=(16, 8), font=(F["ui"], 10), borderwidth=0)
         style.map("TNotebook.Tab",
-                  background=[("selected", C["card"])],
+                  background=[("selected", C["accent_subtle"])],
                   foreground=[("selected", C["primary"])])
 
         # 复选框（白底）
         style.configure("Card.TCheckbutton", background=C["card"], foreground=C["text"])
 
-        # 滚动条（微信式：细窄浅灰滑块，轨道透明）
-        style.configure("Vertical.TScrollbar", background="#c8c9cc", troughcolor=C["page"],
-                        bordercolor=C["page"], arrowcolor="#c8c9cc", relief="flat")
-        style.map("Vertical.TScrollbar",
-                  background=[("active", "#a8a9ad")])
+        # 滚动条（去掉两端箭头 + 细窄浅灰滑块）
+        style.layout("Vertical.TScrollbar", [
+            ("Vertical.Scrollbar.trough", {"sticky": "ns", "children": [
+                ("Vertical.Scrollbar.thumb", {"expand": "1", "sticky": "nswe"})]})])
+        style.configure("Vertical.TScrollbar", background=C["border_strong"], troughcolor=C["page"],
+                        bordercolor=C["page"], lightcolor=C["border_strong"],
+                        darkcolor=C["border_strong"], relief="flat", borderwidth=0,
+                        arrowsize=0, gripcount=0)
+        style.map("Vertical.TScrollbar", background=[("active", C["faint"])])
 
     # ---- 结构 ----
 
@@ -507,30 +533,31 @@ class ConfigWindow:
         header = tk.Frame(self.root, bg=C["card"])
         header.pack(fill="x")
         title_row = tk.Frame(header, bg=C["card"])
-        title_row.pack(fill="x", padx=24, pady=(18, 2))
+        title_row.pack(fill="x", padx=_TS["6"], pady=(_TS["5"], _TS["1"]))
         title_left = tk.Frame(title_row, bg=C["card"])
         title_left.pack(side="left")
-        tk.Label(title_left, text="门户配置", bg=C["card"], fg=C["text"],
-                 font=(F["ui"], 21, "bold")).pack(side="left")
+        tk.Label(title_left, text="门户配置", bg=C["card"], fg=C["title"],
+                 font=(F["ui"], 18, "bold")).pack(side="left")
         from . import __version__
-        tk.Label(title_left, text=f"v{__version__}", bg=C["card"], fg=C["muted"],
-                 font=(F["ui"], 9)).pack(side="left", padx=(8, 0), pady=(11, 0))
-        RoundedButton(title_row, "使用教程", self._show_tutorial, font_size=9, padx=18).pack(side="right")
+        tk.Label(title_left, text=f"v{__version__}", bg=C["card"], fg=C["faint"],
+                 font=(F["ui"], 9)).pack(side="left", padx=(_TS["2"], 0), pady=(_TS["3"], 0))
+        RoundedButton(title_row, "使用教程", self._show_tutorial, font_size=9, padx=_TS["4"],
+                      height=28).pack(side="right")
         tk.Label(header, text="填写你所在学校的门户信息，自动生成 portal.json",
-                 bg=C["card"], fg=C["muted"], font=(F["ui"], 10)).pack(anchor="w", padx=24, pady=(0, 6))
+                 bg=C["card"], fg=C["muted"], font=(F["ui"], 10)).pack(anchor="w", padx=_TS["6"], pady=(0, _TS["1"]))
         gh = tk.Label(header, text=f"GitHub: {GITHUB_URL}", bg=C["card"], fg=C["primary"],
                       font=(F["ui"], 9, "underline"), cursor="hand2")
-        gh.pack(anchor="w", padx=24, pady=(0, 2))
+        gh.pack(anchor="w", padx=_TS["6"], pady=(0, _TS["1"]))
         gh.bind("<Button-1>", lambda e: _open_url(GITHUB_URL))
-        # 彩色 star 文案：分段用不同颜色拼接
+        # star 文案（金色星标为装饰性品牌元素，不属于 UI 强调色）
         star_row = tk.Frame(header, bg=C["card"])
-        star_row.pack(anchor="w", padx=24, pady=(0, 12))
+        star_row.pack(anchor="w", padx=_TS["6"], pady=(0, _TS["3"]))
         tk.Label(star_row, text="本软件完全免费，如果对你有所帮助，请为我点一个 ", bg=C["card"],
-                 fg=C["text"], font=(F["ui"], 9)).pack(side="left")
-        tk.Label(star_row, text="star", bg=C["card"], fg="#f5a623",
+                 fg=C["muted"], font=(F["ui"], 9)).pack(side="left")
+        tk.Label(star_row, text="star", bg=C["card"], fg="#F5A623",
                  font=(F["ui"], 9, "bold")).pack(side="left")
         # 底部分隔线
-        tk.Frame(header, bg=C["border"], height=1).pack(fill="x")
+        tk.Frame(header, bg=C["hairline"], height=1).pack(fill="x")
 
     def _show_tutorial(self) -> None:
         """弹出使用教程窗口。"""
@@ -584,9 +611,12 @@ class ConfigWindow:
     def _build_quick_start(self) -> None:
         """傻瓜式快速开始：选类型 + 填地址，一键生成。"""
         wrap = ttk.Frame(self.root, style="Page.TFrame")
-        wrap.pack(fill="x", padx=18, pady=(16, 0))
-        card = ttk.Frame(wrap, style="Card.TFrame", padding=20)
-        card.pack(fill="x")
+        wrap.pack(fill="x", padx=_TS["6"], pady=(_TS["4"], 0))
+        # 1px 发丝描边：外层描边色 Frame + 内层白底卡片留 1px
+        border = tk.Frame(wrap, bg=C["border"])
+        border.pack(fill="x")
+        card = ttk.Frame(border, style="Card.TFrame", padding=_TS["6"])
+        card.pack(fill="both", expand=True, padx=1, pady=1)
 
         ttk.Label(card, text="快速开始", style="Section.TLabel").grid(row=0, column=0, columnspan=4, sticky="w")
         ttk.Label(card, text="只需两步：选择门户类型，填写门户网页地址",
@@ -753,8 +783,10 @@ class ConfigWindow:
     def _make_tab(self, title: str) -> ttk.Frame:
         outer = ttk.Frame(self.notebook, style="Page.TFrame")
         self.notebook.add(outer, text=title)
-        card = ttk.Frame(outer, style="Card.TFrame", padding=20)
-        card.pack(fill="both", expand=True, padx=4, pady=4)
+        border = tk.Frame(outer, bg=C["border"])
+        border.pack(fill="both", expand=True, padx=_TS["1"], pady=_TS["1"])
+        card = ttk.Frame(border, style="Card.TFrame", padding=_TS["6"])
+        card.pack(fill="both", expand=True, padx=1, pady=1)
         card.columnconfigure(1, weight=1)
         return card
 
