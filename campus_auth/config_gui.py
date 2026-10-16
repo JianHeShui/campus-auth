@@ -77,7 +77,7 @@ class RoundedButton(tk.Canvas):
     """圆角按钮：Canvas 自绘，支持 hover 与点击（纯色 + 1px 描边，无渐变）。"""
 
     def __init__(self, parent, text, command=None, *, fill=C["card"], fg=C["text"],
-                 border=C["border"], hover_fill=None, hover_border=C["primary"],
+                 border=C["border_strong"], hover_fill=None, hover_border=C["border_strong"],
                  radius=8, bold=False, font_size=10, padx=24, height=32, gradient_to=None,
                  width=None):
         self._text = text
