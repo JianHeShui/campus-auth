@@ -120,6 +120,7 @@ def cmd_watch(args: argparse.Namespace) -> int:
 
     policy = RetryPolicy(cap=args.max_interval)
     interval = args.interval
+    was_online = False
     while True:
         if not policy.should_try():
             time.sleep(1)
@@ -133,9 +134,14 @@ def cmd_watch(args: argparse.Namespace) -> int:
         if result is not None:
             if result.state == AuthState.ONLINE:
                 policy.on_success()
+                # 首次上线时刷新 Windows NCSI 状态指示器（避免每轮都刷）
+                if not was_online:
+                    trigger_windows_ncsi_refresh()
+                    was_online = True
                 if not args.quiet:
                     print(f"[{time.strftime('%H:%M:%S')}] 已联网", flush=True)
             elif result.state == AuthState.ERROR:
+                was_online = False
                 if not args.quiet:
                     print(f"[{time.strftime('%H:%M:%S')}] {result.message}", flush=True)
                 # 明确失败（账号密码错等）不无限重试，等待人工介入
@@ -143,6 +149,7 @@ def cmd_watch(args: argparse.Namespace) -> int:
             elif result.state == AuthState.PENDING:
                 policy.on_pending()
             else:
+                was_online = False
                 policy.on_failure()
         time.sleep(interval)
     return 1

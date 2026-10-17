@@ -275,21 +275,55 @@ def internet_ok_by_ip(adapter: NetworkAdapter | None = None, timeout: float = 3.
     return False
 
 
+# 微软 NCSI 检测点（域名解析失败时用 IP 直连 + Host 头绕开坏 DNS）
+_NCSI_HOST = "www.msftconnecttest.com"
+_NCSI_EXPECT = "Microsoft Connect Test"
+_NCSI_IPS = ("13.107.4.50", "13.107.246.40", "204.79.197.200")
+
+
+def _ncsi_probe(host: str, timeout: float, use_host_header: bool = False) -> bool:
+    """访问一次 NCSI 检测点并校验响应内容。"""
+    try:
+        conn = http.client.HTTPConnection(host, 80, timeout=timeout)
+        headers = {"Host": _NCSI_HOST} if use_host_header else {}
+        conn.request("GET", "/connecttest.txt", headers=headers)
+        resp = conn.getresponse()
+        body = resp.read().decode("utf-8", "replace")
+        conn.close()
+        return resp.status == 200 and _NCSI_EXPECT in body
+    except (OSError, ValueError, http.client.HTTPException):
+        return False
+
+
 def trigger_windows_ncsi_refresh(timeout: float = 5.0) -> None:
-    """认证成功后主动访问 Windows NCSI 检测点，帮助刷新网络状态指示器。
+    """认证成功后主动触发 Windows NCSI 检测，帮助刷新网络状态指示器。
 
     校园网 captive portal 会劫持微软的连通性检测请求，导致 Windows 任务栏
-    仍显示「需要操作/无 Internet」。接口认证成功后网络实际已通，这里主动访问
-    一次微软检测点（www.msftconnecttest.com），促使 Windows 尽快判定「已连接」。
+    仍显示「需要操作/无 Internet」。接口认证成功后网络实际已通，这里：
+    1) 刷新 DNS 缓存；
+    2) 访问微软 NCSI 检测点（域名失败时回退 IP 直连，绕开坏 DNS），
+       并校验返回确实是 "Microsoft Connect Test"（避免被认证页劫持误判）。
     失败静默（不影响认证主流程）。
     """
+    import subprocess
+    # 1) 刷新 DNS 缓存
     try:
-        conn = http.client.HTTPConnection("www.msftconnecttest.com", 80, timeout=timeout)
-        conn.request("GET", "/connecttest.txt")
-        resp = conn.getresponse()
-        resp.read()
-        conn.close()
-    except (OSError, ValueError, http.client.HTTPException):
+        subprocess.run(["ipconfig", "/flushdns"], capture_output=True, timeout=5,
+                       creationflags=0x08000000)  # CREATE_NO_WINDOW
+    except Exception:
+        pass
+
+    # 2) 域名探测（DNS 正常时首选）
+    # 3) DNS 故障时回退 IP 直连（带 Host 头）
+    # 整体再包一层异常保护：本函数承诺「失败静默，不影响认证主流程」，
+    # 即使探测环节抛出未预期异常也不能打断 watch 守护循环。
+    try:
+        if _ncsi_probe(_NCSI_HOST, timeout):
+            return
+        for ip in _NCSI_IPS:
+            if _ncsi_probe(ip, timeout, use_host_header=True):
+                return
+    except Exception:
         pass
 
 

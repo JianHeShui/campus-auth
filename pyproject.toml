@@ -4,22 +4,24 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "campus-auth"
-version = "0.1.0"
-description = "独立实现的锐捷 SAM+ 校园网自动认证工具（纯标准库，接口直连）"
+version = "0.2.4"
+description = "Windows 校园网自动认证工具（锐捷工作流 / 华三 CAS SSO / 通用登录）"
 readme = "README.md"
 requires-python = ">=3.10"
 license = { text = "MIT" }
 authors = [{ name = "campus-auth contributors" }]
-keywords = ["campus-network", "ruijie", "authentication", "captive-portal"]
+keywords = ["campus-network", "ruijie", "h3c", "authentication", "captive-portal"]
 classifiers = [
     "Programming Language :: Python :: 3",
     "Operating System :: Microsoft :: Windows",
     "License :: OSI Approved :: MIT License",
 ]
-# 纯标准库，无运行时第三方依赖
+# 锐捷/通用模式纯标准库；华三 CAS 模式需要 pycryptodome（打包版已内置）
 dependencies = []
 
 [project.optional-dependencies]
+# 华三 CAS SSO 模式（AES 密码加密）
+cas = ["pycryptodome>=3.20"]
 dev = []
 
 [project.scripts]

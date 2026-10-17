@@ -13,9 +13,9 @@
 
 ## 下载与安装
 
-1. 到 [Releases](https://github.com/JianHeShui/campus-auth/releases) 页面，下载最新版 **`campus-auth-v0.2.3.zip`**（无需安装 Python）。
+1. 到 [Releases](https://github.com/JianHeShui/campus-auth/releases) 页面，下载最新版 **`campus-auth-v0.2.4.zip`**（无需安装 Python）。
 2. 解压 zip 到任意目录（建议单独建一个文件夹）。
-3. 进入解压出的 `campus-auth` 文件夹，双击 `campus-auth.exe` 运行。
+3. 进入该文件夹，双击 `campus-auth.exe` 运行。
 
 > 首次运行会在桌面自动创建「校园网自动登录」快捷方式，并弹出配置界面 + 启动托盘。
 > 建议先看一遍「使用教程」（配置界面右上角会自动弹出）。
@@ -75,6 +75,9 @@
 
 **Q：为什么托盘图标在右下角看不到？**
 Windows 11 会把新托盘图标折叠到「^」箭头里，点一下展开即可。
+
+**Q：能上网了，但 Windows 任务栏显示「无 Internet」？**
+认证成功后程序会自动刷新 DNS 缓存并触发 Windows 网络状态检测（v0.2.4 起），通常几秒内恢复「已连接」。若仍不刷新，是 Windows NCSI 判定延迟，不影响实际联网。
 
 **Q：账号密码存在哪里？**
 存在本机 `~/.campus-auth/credentials.json`。请不要把该文件上传到公开仓库。

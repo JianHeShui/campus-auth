@@ -1012,7 +1012,7 @@ class ConfigWindow:
         """后台守护线程：周期检测 + 登录 + 退避重试。"""
         import time
         from .client import Client
-        from .network import enumerate_interfaces, pick_adapter
+        from .network import enumerate_interfaces, pick_adapter, trigger_windows_ncsi_refresh
         from .portal import load_profile
         from .state import AuthState, RetryPolicy
         try:
@@ -1024,6 +1024,7 @@ class ConfigWindow:
         client = Client(profile, adapter=adapter)
         policy = RetryPolicy()
         error_shown = False  # 避免同一错误重复弹窗
+        was_online = False
         while True:
             if not policy.should_try():
                 time.sleep(1)
@@ -1043,7 +1044,12 @@ class ConfigWindow:
                 if result.state == AuthState.ONLINE:
                     policy.on_success()
                     error_shown = False  # 成功后重置，允许下次再报告
+                    # 首次上线时刷新 Windows NCSI 状态指示器
+                    if not was_online:
+                        trigger_windows_ncsi_refresh()
+                        was_online = True
                 elif result.state == AuthState.ERROR:
+                    was_online = False
                     msg = result.message or ""
                     if "密码" in msg or "账号" in msg or "用户不存在" in msg:
                         # 账号密码错误：提示用户用「重新输入账号密码」更正
@@ -1054,6 +1060,7 @@ class ConfigWindow:
                 elif result.state == AuthState.PENDING:
                     policy.on_pending()
                 else:
+                    was_online = False
                     policy.on_failure()
             time.sleep(15)
 
