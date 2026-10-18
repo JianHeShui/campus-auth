@@ -2,7 +2,13 @@
 import unittest
 from unittest.mock import patch
 
-from campus_auth.detect import parse_address, probe_portal
+from campus_auth.detect import (
+    _PROBE_PATHS,
+    _looks_like_javascript,
+    _probe_all,
+    parse_address,
+    probe_portal,
+)
 
 
 def _fake_get(responses: dict[str, tuple]):
@@ -71,6 +77,48 @@ class DetectTests(unittest.TestCase):
             result = probe_portal("10.0.0.1")
         self.assertFalse(result["recognized"])
         self.assertEqual(result["mode"], "simple")
+
+
+class CasContentCheckTests(unittest.TestCase):
+    """CAS 判定必须校验正文内容，不能只看 HTTP 200（防 SPA 万能 200 误判）。"""
+
+    def test_spa_universal_200_html_is_not_cas(self):
+        html = "<!DOCTYPE html><html><head><title>portal</title></head><body></body></html>"
+        get = _fake_get({
+            "/": (200, {}, html),
+            "/sso-public/cas-login-new/main.js": (200, {}, html),
+        })
+        with patch("campus_auth.detect._get", get):
+            result = probe_portal("10.0.0.1")
+        self.assertNotEqual(result["type"], "华三 CAS SSO")
+
+    def test_real_cas_javascript_detected(self):
+        js = "!function(){window.__PLATFORM_SSO__=1;var a=1;}();"
+        get = _fake_get({
+            "/sso-public/cas-login-new/main.js":
+                (200, {"content-type": "application/javascript"}, js),
+        })
+        with patch("campus_auth.detect._get", get):
+            result = probe_portal("10.0.0.1")
+        self.assertEqual(result["type"], "华三 CAS SSO")
+
+    def test_javascript_detection_rules(self):
+        self.assertTrue(_looks_like_javascript(200, {"content-type": "application/javascript"}, "var x=1;"))
+        self.assertTrue(_looks_like_javascript(200, {}, "function boot(){}"))
+        self.assertFalse(_looks_like_javascript(200, {}, "<!DOCTYPE html><html></html>"))
+        self.assertFalse(_looks_like_javascript(404, {}, "function boot(){}"))
+        self.assertFalse(_looks_like_javascript(200, {}, ""))
+
+    def test_probe_all_covers_every_path(self):
+        with patch("campus_auth.detect._get", _fake_get({})):
+            results = _probe_all("10.0.0.1", 80, "http", 3)
+        self.assertEqual(set(results), set(_PROBE_PATHS))
+
+    def test_result_reports_elapsed(self):
+        with patch("campus_auth.detect._get", _fake_get({})):
+            result = probe_portal("10.0.0.1")
+        self.assertIn("elapsed", result)
+        self.assertGreaterEqual(result["elapsed"], 0)
 
 
 if __name__ == "__main__":

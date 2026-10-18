@@ -97,5 +97,21 @@ class TriggerNcsiRefreshTests(unittest.TestCase):
             network.trigger_windows_ncsi_refresh()  # 不应抛异常
 
 
+class InternetOkByIpTests(unittest.TestCase):
+    """联网判定优先用 NCSI 检测点内容校验，NCSI 不可用时回退旧逻辑。"""
+
+    def test_uses_ncsi_probe_first(self):
+        with patch.object(network, "_ncsi_probe", side_effect=[False, True]) as probe, \
+             patch.object(network, "BoundHTTPConnection") as conn_cls:
+            self.assertTrue(network.internet_ok_by_ip())
+        self.assertEqual(probe.call_count, 2)
+        conn_cls.assert_not_called()
+
+    def test_ncsi_all_fail_falls_back_and_handles_errors(self):
+        with patch.object(network, "_ncsi_probe", return_value=False), \
+             patch.object(network, "BoundHTTPConnection", side_effect=OSError("no route")):
+            self.assertFalse(network.internet_ok_by_ip())
+
+
 if __name__ == "__main__":
     unittest.main()

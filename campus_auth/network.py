@@ -151,12 +151,21 @@ def enumerate_interfaces() -> tuple[NetworkAdapter, ...]:
     ]
     get_addresses.restype = ctypes.c_uint32
 
-    buffer_size = ctypes.c_uint32(15000)
-    storage = ctypes.create_string_buffer(buffer_size.value)
-    head = ctypes.cast(storage, ctypes.POINTER(_AdapterAddresses))
     # AF_INET，附带网关/多播跳过标志
     flags = 0x2 | 0x4
-    if get_addresses(socket.AF_INET, flags, None, head, ctypes.byref(buffer_size)) != 0:
+    # 网卡较多时首次缓冲区可能不足：Windows 会通过 buffer_size 回传所需大小，
+    # 这里最多重试 3 次；ERROR_BUFFER_OVERFLOW = 111。
+    buffer_size = ctypes.c_uint32(15000)
+    head = None
+    for _ in range(3):
+        storage = ctypes.create_string_buffer(buffer_size.value)
+        head = ctypes.cast(storage, ctypes.POINTER(_AdapterAddresses))
+        rc = get_addresses(socket.AF_INET, flags, None, head, ctypes.byref(buffer_size))
+        if rc == 0:
+            break
+        if rc != 111:
+            return ()
+    else:
         return ()
 
     found: list[NetworkAdapter] = []
@@ -237,7 +246,8 @@ def https_reachable(host: str, *, adapter: NetworkAdapter | None = None,
         secure.sendall(f"HEAD / HTTP/1.1\r\nHost: {host}\r\nConnection: close\r\n\r\n".encode("ascii"))
         with http.client.HTTPResponse(secure) as response:
             response.begin()
-            return response.status == 200
+            # HEAD 请求有些站点返回 405 / 重定向，2xx~3xx 都视为可达
+            return 200 <= response.status < 400
     except (OSError, ValueError, http.client.HTTPException, ssl.SSLError):
         return False
     finally:
@@ -253,11 +263,18 @@ PUBLIC_PROBE_IPS = ("223.5.5.5", "119.29.29.29", "180.76.76.76", "114.114.114.11
 
 
 def internet_ok_by_ip(adapter: NetworkAdapter | None = None, timeout: float = 3.0) -> bool:
-    """HTTP 访问公网 IP 判断是否已联网（完全不依赖 DNS）。
+    """判断是否已联网（完全不依赖 DNS）。
 
-    未认证时网关会劫持 HTTP 流量返回 location.href 跳转（视为未联网）；
-    返回正常响应（无劫持）则视为已联网；全部超时/拒绝时保守视为未联网。
+    优先用 NCSI 检测点的 IP 直连（带 Host 头）并校验正文：真正放行时返回
+    「Microsoft Connect Test」，网关劫持时返回认证页 → 判未联网，比只看
+    HTTP 是否超时更可靠。NCSI 检测点全不可达时，回退到公网 IP 的劫持特征判断。
     """
+    # 1) NCSI 检测点 IP 直连 + 内容校验（劫持页正文不匹配，天然区分）
+    for ip in _NCSI_IPS:
+        if _ncsi_probe(ip, timeout, use_host_header=True):
+            return True
+
+    # 2) 回退：公网 IP 的 HTTP 响应是否被网关劫持
     for ip in PUBLIC_PROBE_IPS:
         try:
             conn = BoundHTTPConnection(ip, 80, adapter=adapter, timeout=timeout)

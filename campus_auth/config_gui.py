@@ -10,7 +10,7 @@ from pathlib import Path
 from tkinter import filedialog, messagebox, ttk
 
 from .portal import DEFAULT_PROFILE, deep_merge
-from .theme import C as _TC, MOTION as _MOTION, R as _TR, S as _TS
+from .theme import C as _TC, S as _TS
 
 # 认证引擎模式
 MODES = ("workflow", "cas", "simple")
@@ -61,16 +61,6 @@ def _round_rect(canvas: tk.Canvas, x1, y1, x2, y2, r, **kw):
         x1, y2, x1, y2 - r, x1, y1 + r, x1, y1,
     ]
     return canvas.create_polygon(points, smooth=True, **kw)
-
-
-def _blend(c1: str, c2: str, t: float) -> str:
-    """两个十六进制颜色之间插值（t: 0→c1, 1→c2）。"""
-    r1, g1, b1 = int(c1[1:3], 16), int(c1[3:5], 16), int(c1[5:7], 16)
-    r2, g2, b2 = int(c2[1:3], 16), int(c2[3:5], 16), int(c2[5:7], 16)
-    r = int(r1 + (r2 - r1) * t)
-    g = int(g1 + (g2 - g1) * t)
-    b = int(b1 + (b2 - b1) * t)
-    return f"#{r:02x}{g:02x}{b:02x}"
 
 
 class RoundedButton(tk.Canvas):
@@ -142,79 +132,6 @@ class RoundedButton(tk.Canvas):
             self._command()
         self._hovered = False
         self._repaint()
-
-
-class SlimScrollbar(tk.Canvas):
-    """微信式细窄滚动条：圆角胶囊滑块，贴右边缘，无原生轨道/箭头。"""
-
-    def __init__(self, parent, text_widget: tk.Text, *, width: int = 6,
-                 color: str = None, bg: str = None):
-        color = color or C["border_strong"]
-        bg = bg or C["card"]
-        super().__init__(parent, width=width, bg=bg, highlightthickness=0, bd=0,
-                         cursor="hand2")
-        self._text = text_widget
-        self._color = color
-        self._width = width
-        self._drag_anchor = None
-
-        text_widget.bind("<MouseWheel>", self._on_wheel)
-        text_widget.bind("<Button-4>", self._on_wheel)
-        text_widget.bind("<Button-5>", self._on_wheel)
-        text_widget.bind("<Configure>", lambda e: self._update())
-        text_widget.bind("<KeyRelease>", lambda e: self._update())
-        self.bind("<Configure>", lambda e: self._update())
-        self.bind("<ButtonPress-1>", self._on_press)
-        self.bind("<B1-Motion>", self._on_drag)
-        self.bind("<ButtonRelease-1>", lambda e: setattr(self, "_drag_anchor", None))
-        self._update()
-
-    def set(self, *args) -> None:
-        """兼容 Text 的 yscrollcommand 回调。"""
-        self._update()
-
-    def _update(self) -> None:
-        self.delete("all")
-        h = self.winfo_height()
-        if h <= 1:
-            return
-        # 文本总高度（近似，含滚动内容）
-        total = self._text.winfo_reqheight() or 1
-        visible = self._text.winfo_height() or 1
-        if total <= visible:
-            return  # 内容不足一屏，不显示滑块
-        thumb_h = max(24, int(h * visible / total))
-        first = float(self._text.yview()[0])
-        thumb_y = int(first * (h - thumb_h))
-        w = self._width - 2
-        r = w / 2  # 胶囊圆角
-        _round_rect(self, 1, thumb_y, 1 + w, thumb_y + thumb_h, r,
-                    fill=self._color, outline="")
-
-    def _on_wheel(self, event) -> None:
-        if getattr(event, "num", 0) == 4 or getattr(event, "delta", 0) > 0:
-            self._text.yview_scroll(-1, "units")
-        elif getattr(event, "num", 0) == 5 or getattr(event, "delta", 0) < 0:
-            self._text.yview_scroll(1, "units")
-        self._update()
-
-    def _on_press(self, event) -> None:
-        self._drag_anchor = event.y
-
-    def _on_drag(self, event) -> None:
-        if self._drag_anchor is None:
-            return
-        delta = event.y - self._drag_anchor
-        self._drag_anchor = event.y
-        h = self.winfo_height() or 1
-        total = self._text.winfo_reqheight() or 1
-        visible = self._text.winfo_height() or 1
-        if total > visible:
-            # 按比例滚动
-            units = int(delta * total / (h * 20)) + (1 if delta > 0 else -1 if delta < 0 else 0)
-            if units:
-                self._text.yview_scroll(units, "units")
-                self._update()
 
 
 # 各字段的中文说明（key 为扁平字段路径，value 为显示标签）
@@ -387,14 +304,18 @@ class ConfigWindow:
         self.vars: dict[str, tk.StringVar] = {}
         self.extra_fields_text: tk.Text | None = None
         self.error_markers_text: tk.Text | None = None
-        self.preview_text: tk.Text | None = None
         self.template_var: tk.StringVar | None = None
         self.address_var: tk.StringVar | None = None
         self.advanced_visible = False
+        self.detect_btn = None
 
         root.title("校园网认证 · 门户配置")
-        root.geometry("1120x720")
-        root.minsize(1080, 700)
+        # 按屏幕可用区自适应：小屏（1366×768 等）不至于超出屏幕 / 按钮被裁
+        screen_w, screen_h = root.winfo_screenwidth(), root.winfo_screenheight()
+        width = max(900, min(1120, screen_w - 120))
+        height = max(600, min(720, screen_h - 160))
+        root.geometry(f"{width}x{height}")
+        root.minsize(min(900, width), min(600, height))
         root.configure(bg=C["page"])
 
         self._apply_theme()
@@ -414,13 +335,19 @@ class ConfigWindow:
         self.root.protocol("WM_DELETE_WINDOW", self._on_close)
 
     def _on_close(self) -> None:
-        """关闭窗口前自动保存当前配置（记忆门户地址等）。"""
+        """关闭窗口前自动保存当前配置；配置非法时提示但不阻塞关闭。"""
+        data, error = self._collect_safe()
+        if error:
+            messagebox.showwarning(
+                "配置未保存",
+                f"关闭前自动保存失败：\n\n{error}\n\n窗口仍会关闭，但本次修改可能未写入 portal.json。")
+            self.root.destroy()
+            return
         try:
-            data = self._collect()
             portal_file = _tool_root() / "portal.json"
             portal_file.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
-        except Exception:
-            pass  # 保存失败不阻塞关闭
+        except OSError as exc:
+            messagebox.showwarning("配置未保存", f"无法写入 portal.json：{exc}")
         self.root.destroy()
 
     def _read_saved_profile(self) -> dict | None:
@@ -641,7 +568,9 @@ class ConfigWindow:
         # 按钮行（独占一行）
         btn_row = tk.Frame(card, bg=C["card"])
         btn_row.grid(row=4, column=0, columnspan=4, sticky="w", pady=(10, 2))
-        RoundedButton(btn_row, "自动探测类型", self._auto_detect, font_size=9, width=120).pack(side="left", padx=(0, 8))
+        self.detect_btn = RoundedButton(btn_row, "自动探测类型", self._auto_detect,
+                                        font_size=9, width=120)
+        self.detect_btn.pack(side="left", padx=(0, 8))
         RoundedButton(btn_row, "一键生成配置", self._quick_generate,
                       fill=C["primary"], fg=C["white"], border=C["primary"],
                       hover_fill=C["primary_hover"], hover_border=C["primary_hover"], gradient_to=C["primary_hover"],
@@ -732,15 +661,23 @@ class ConfigWindow:
         import threading
         from .detect import probe_portal
         q: "queue.Queue" = queue.Queue()
+        self._set_detect_busy(True)
 
         def worker() -> None:
             try:
                 q.put(probe_portal(address))
             except Exception as exc:  # 探测任何异常都不崩界面
                 q.put({"recognized": False, "type": None, "template": None, "mode": "simple",
-                       "message": f"探测失败：{exc}", "evidence": []})
+                       "message": f"探测失败：{exc}", "evidence": [], "elapsed": 0.0})
         threading.Thread(target=worker, daemon=True).start()
         self._poll_detect(q)
+
+    def _set_detect_busy(self, busy: bool) -> None:
+        """探测期间给按钮一个进行中状态，避免用户以为界面卡死。"""
+        if getattr(self, "detect_btn", None) is None:
+            return
+        self.detect_btn._text = "探测中…" if busy else "自动探测类型"
+        self.detect_btn._repaint()
 
     def _poll_detect(self, q) -> None:
         try:
@@ -748,6 +685,7 @@ class ConfigWindow:
         except Exception:
             self.root.after(200, lambda: self._poll_detect(q))
             return
+        self._set_detect_busy(False)
         self._on_detect_result(result)
 
     def _on_detect_result(self, result: dict) -> None:
@@ -759,7 +697,9 @@ class ConfigWindow:
             self.address_var.get() if self.address_var else None)
         evidence = result.get("evidence") or []
         detail = "\n".join(evidence[:6]) if evidence else ""
-        messagebox.showinfo("探测结果", f"{result.get('message', '')}\n\n{detail}")
+        elapsed = result.get("elapsed")
+        meta = f"（耗时 {elapsed:.2f}s）" if isinstance(elapsed, (int, float)) else ""
+        messagebox.showinfo("探测结果", f"{result.get('message', '')}{meta}\n\n{detail}")
 
     def _build_notebook(self) -> None:
         self.advanced_wrap = ttk.Frame(self.root, style="Page.TFrame")
@@ -930,8 +870,11 @@ class ConfigWindow:
 
     def _start_autologin(self) -> None:
         """保存配置 → 确认账号密码 → 启动独立后台守护进程。"""
-        # 1) 保存配置到工具目录
-        data = self._collect()
+        # 1) 保存配置到工具目录（先做输入校验，避免把非法配置写进 portal.json）
+        data, error = self._collect_safe()
+        if error:
+            messagebox.showerror("配置有误", f"请先修正以下问题再开始自动登录：\n\n{error}")
+            return
         portal_file = _tool_root() / "portal.json"
         try:
             portal_file.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
@@ -1022,13 +965,32 @@ class ConfigWindow:
 
     # ---- 数据装配 ----
 
+    @staticmethod
+    def _parse_port(value: str, label: str) -> int:
+        """端口输入校验：必须是 1-65535 的数字。"""
+        if not value.isdigit():
+            raise ValueError(f"{label} 必须是数字（当前：{value!r}）")
+        port = int(value)
+        if not 1 <= port <= 65535:
+            raise ValueError(f"{label} 超出 1-65535 范围（当前：{port}）")
+        return port
+
+    def _collect_safe(self) -> tuple[dict | None, str]:
+        """组装配置；输入非法时返回 (None, 错误说明)，而不是把异常抛给 Tk 回调。"""
+        try:
+            return self._collect(), ""
+        except ValueError as exc:
+            return None, str(exc)
+        except Exception as exc:  # 兜底：任何解析异常都转成可读提示
+            return None, f"配置解析失败：{exc}"
+
     def _collect(self) -> dict:
-        """从表单组装 portal.json 结构。"""
+        """从表单组装 portal.json 结构（输入非法时抛 ValueError）。"""
         data = json.loads(json.dumps(DEFAULT_PROFILE, ensure_ascii=False))
         for key, var in self.vars.items():
             value = var.get().strip()
             if key in ("portal.port", "connectivity.probe_port"):
-                _set(data, key, int(value) if value.isdigit() else 0)
+                _set(data, key, self._parse_port(value, _FIELD_LABELS.get(key, key)))
             else:
                 _set(data, key, value)
         data["auth_mode"] = self.mode_var.get()
@@ -1046,7 +1008,16 @@ class ConfigWindow:
         data["connectivity"]["probe_hosts"] = hosts or ["www.baidu.com", "www.qq.com"]
         if self.extra_fields_text is not None:
             raw = self.extra_fields_text.get("1.0", "end").strip()
-            data["simple_login"]["extra_fields"] = json.loads(raw) if raw else {}
+            if raw:
+                try:
+                    parsed = json.loads(raw)
+                except ValueError as exc:
+                    raise ValueError(f"「通用登录」的额外固定字段不是合法 JSON：{exc}") from exc
+                if not isinstance(parsed, dict):
+                    raise ValueError("「通用登录」的额外固定字段必须是 JSON 对象（形如 {\"key\": \"value\"}）")
+                data["simple_login"]["extra_fields"] = parsed
+            else:
+                data["simple_login"]["extra_fields"] = {}
         if self.error_markers_text is not None:
             markers = {}
             for line in self.error_markers_text.get("1.0", "end").splitlines():
@@ -1090,18 +1061,23 @@ class ConfigWindow:
     # ---- 动作 ----
 
     def refresh_preview(self) -> None:
-        data = self._collect()
-        if self.preview_text is not None:
-            self.preview_text.delete("1.0", "end")
-            self.preview_text.insert("1.0", json.dumps(data, ensure_ascii=False, indent=2))
+        """（兼容旧调用）配置预览区已移除，保留空方法避免调用点报错。"""
+        return
 
     def save_file(self) -> None:
         target = self.profile_path or filedialog.asksaveasfilename(
             defaultextension=".json", filetypes=[("JSON", "*.json")], initialfile="portal.json")
         if not target:
             return
-        data = self._collect()
-        Path(target).write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
+        data, error = self._collect_safe()
+        if error:
+            messagebox.showerror("保存失败", error)
+            return
+        try:
+            Path(target).write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
+        except OSError as exc:
+            messagebox.showerror("保存失败", f"无法写入 {target}：{exc}")
+            return
         messagebox.showinfo("已保存", f"已保存到 {target}")
 
     def load_file(self) -> None:
@@ -1165,11 +1141,17 @@ def _activate_existing() -> None:
 
 
 def _window_icon_path() -> Path:
-    """配置窗口图标（tray.ico）：frozen 时在 _MEIPASS，源码时在项目根。"""
+    """配置窗口图标（tray.ico）：_MEIPASS / 项目根 / 包内（pip 安装）依次回退。"""
     import sys
+    candidates: list[Path] = []
     if getattr(sys, "frozen", False):
-        return Path(getattr(sys, "_MEIPASS", Path(sys.executable).parent)) / "tray.ico"
-    return Path(__file__).resolve().parent.parent / "tray.ico"
+        candidates.append(Path(getattr(sys, "_MEIPASS", Path(sys.executable).parent)) / "tray.ico")
+    candidates.append(Path(__file__).resolve().parent.parent / "tray.ico")
+    candidates.append(Path(__file__).resolve().parent / "tray.ico")
+    for path in candidates:
+        if path.exists():
+            return path
+    return candidates[-1]
 
 
 def run_gui(profile_path: str | None = None) -> int:

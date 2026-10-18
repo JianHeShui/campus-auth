@@ -156,7 +156,9 @@ class Client:
         return self._request("POST", path, body=body)
 
     def _ok(self, body: dict) -> bool:
-        return body.get("code") in (200, None)
+        """业务成功判定：code 缺失或为 200（兼容字符串 "200"）均视为成功。"""
+        code = body.get("code")
+        return code is None or str(code) == "200"
 
     # ---- 会话获取 ----
 
@@ -178,8 +180,14 @@ class Client:
         path = parts.path or "/"
         if not host:
             return None
+        port = parts.port or (443 if parts.scheme == "https" else 80)
         try:
-            conn = BoundHTTPConnection(host, 80, adapter=self.adapter, timeout=self.timeout)
+            if parts.scheme == "https":
+                import ssl
+                conn = http.client.HTTPSConnection(
+                    host, port, timeout=self.timeout, context=ssl.create_default_context())
+            else:
+                conn = BoundHTTPConnection(host, port, adapter=self.adapter, timeout=self.timeout)
             conn.request("GET", path, headers={"User-Agent": "campus-auth/0.1", "Connection": "close"})
             response = conn.getresponse()
             status = response.status
@@ -305,7 +313,7 @@ class Client:
         node = self.get_current_node(session_id)
         node_path = str(node.get("currentNodePath", ""))
         if node_path:
-            self._log(f"当前认证节点: {node_path}")
+            _auth_log(f"当前认证节点: {node_path}")
 
         # 2) 提交账号密码
         submitted = self.submit_credentials(session_id, credentials)
@@ -319,7 +327,10 @@ class Client:
                 chosen = self.set_service(session_id, credentials.service)
                 if not chosen["ok"]:
                     # 服务确认失败可能只是已在线，复核后再定
-                    pass
+                    _auth_log(f"服务确认失败（可能已在线）: {chosen['message']}")
+            else:
+                # 服务名不在门户列表：跳过确认但留日志，便于排查计费/运营商问题
+                _auth_log(f"运营商 {credentials.service!r} 不在门户服务列表 {services!r} 中，跳过服务确认")
 
         # 4) 复核在线
         if self.check_online(session_id):
@@ -352,9 +363,11 @@ class Client:
         msg = result.get("message", "CAS 认证失败")
         detail = result.get("detail", {})
         body = detail.get("body", "") if isinstance(detail, dict) else ""
-        # 账号或密码错误（响应体含明确提示）
-        if any(k in body for k in ("用户不存在或者密码错误", "密码错误", "密码不正确", "账号或密码")):
-            return AuthResult(AuthState.ERROR, "账号或密码错误", detail={"category": "password_wrong"})
+        # 统一走画像的错误文案分类（password_wrong / account_invalid / terminal_limit / auth_fail）
+        category = self.profile.classify_error(f"{msg} {body}")
+        if category in ("password_wrong", "account_invalid", "terminal_limit", "auth_fail"):
+            message = "账号或密码错误" if category == "password_wrong" else str(msg or "认证失败")
+            return AuthResult(AuthState.ERROR, message, detail={"category": category})
         # 网络抖动（连接被重置/地址无效等）→ PENDING 重试，而非长退避
         if any(k in msg for k in ("WinError", "10049", "10054", "10065", "连接", "地址无效", "超时", "timeout")):
             return AuthResult(AuthState.PENDING, msg, detail=result.get("detail", {}))
@@ -404,13 +417,17 @@ class Client:
             return AuthResult(AuthState.PENDING, "会话已过期，等待重新签发", detail={"category": category})
         return AuthResult(AuthState.OFFLINE, message, detail=body)
 
-    def _internet_ok(self) -> bool:
-        for host in self.profile.probe_hosts:
-            if https_reachable(host, adapter=self.adapter, timeout=5, port=self.profile.probe_port):
-                return True
-        # 校园网 DNS 故障时回退到 IP 直连探测，避免误判「未联网」
-        from .network import internet_ok_by_ip
-        return internet_ok_by_ip(adapter=self.adapter, timeout=5)
+    def is_online(self) -> bool:
+        """公共联网判定（CLI/GUI 不应直接调用私有 _internet_ok）。"""
+        return self._internet_ok()
 
-    def _log(self, message: str) -> None:
-        pass  # 预留：CLI 可注入日志回调
+    def _internet_ok(self) -> bool:
+        # 先用不依赖 DNS 的 IP 探针（快；已联网时通常立刻返回 True）
+        from .network import internet_ok_by_ip
+        if internet_ok_by_ip(adapter=self.adapter, timeout=3):
+            return True
+        # 再做域名 TLS 探测（更严格；DNS 故障时可能失败，但 IP 探针已先覆盖）
+        for host in self.profile.probe_hosts:
+            if https_reachable(host, adapter=self.adapter, timeout=3, port=self.profile.probe_port):
+                return True
+        return False

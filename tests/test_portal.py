@@ -1,14 +1,17 @@
 """画像加载与状态机单元测试。"""
+import atexit
 import json
+import shutil
+import tempfile
 import unittest
 from pathlib import Path
 
 from campus_auth.portal import DEFAULT_PROFILE, deep_merge, load_profile, ProfileError
 from campus_auth.state import RetryPolicy
 
-# 沙箱仅允许写工作区，临时文件直接放在测试目录下（工作区内）
-_TMP_ROOT = Path(__file__).resolve().parent / ".tmp"
-_TMP_ROOT.mkdir(exist_ok=True)
+# 临时文件用系统临时目录：测试不依赖仓库可写（只读环境也能跑）
+_TMP_ROOT = Path(tempfile.mkdtemp(prefix="campus-auth-test-"))
+atexit.register(shutil.rmtree, _TMP_ROOT, True)
 
 
 class DeepMergeTests(unittest.TestCase):

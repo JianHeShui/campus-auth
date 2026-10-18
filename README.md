@@ -13,7 +13,7 @@
 
 ## 下载与安装
 
-1. 到 [Releases](https://github.com/JianHeShui/campus-auth/releases) 页面，下载最新版 **`campus-auth-v0.2.5.zip`**（无需安装 Python）。
+1. 到 [Releases](https://github.com/JianHeShui/campus-auth/releases) 页面，下载最新版 **`campus-auth-v0.2.6.zip`**（无需安装 Python）。
 2. 解压 zip 到任意目录（建议单独建一个文件夹）。
 3. 进入该文件夹，双击 `campus-auth.exe` 运行。
 
@@ -116,19 +116,21 @@ python -m campus_auth watch    # 守护循环
 ```
 
 > 华三 CAS SSO 模式依赖 `pycryptodome`（AES 密码加密）；锐捷/通用模式为纯标准库。
+> 从源码运行 CAS 模式时先安装：`python -m pip install pycryptodome`（或 `pip install -e ".[cas]"`）。
 > 打包时已内置依赖，最终用户无需安装。
 
 ### 打包 exe
 
 ```powershell
 powershell -ExecutionPolicy Bypass -File .\build.ps1
-# 产物 dist\campus-auth\ 目录
+# 产物：dist\campus-auth\ 目录 + dist\campus-auth-v<版本>.zip 发布包
 ```
 
 ### 测试
 
 ```powershell
 python -m unittest discover -s tests -v
+# 115 项测试，全部不触网；CI 配置见 .github/workflows/tests.yml（Windows + Python 3.10/3.12）
 ```
 
 本项目为对门户进行**黑盒探测后的独立实现**，未参考第三方登录工具源码，声明见 [docs/portal-profile.md](docs/portal-profile.md)。

@@ -1,5 +1,8 @@
 """通用登录（simple 模式）测试：本地假门户 + mock 外网探测，不触网。"""
+import atexit
 import json
+import shutil
+import tempfile
 import threading
 import unittest
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -10,8 +13,9 @@ from campus_auth.client import Client, Credentials
 from campus_auth.portal import load_profile
 from campus_auth.state import AuthState
 
-_TMP_ROOT = Path(__file__).resolve().parent / ".tmp"
-_TMP_ROOT.mkdir(exist_ok=True)
+# 临时文件用系统临时目录：测试不依赖仓库可写（只读环境也能跑）
+_TMP_ROOT = Path(tempfile.mkdtemp(prefix="campus-auth-test-"))
+atexit.register(shutil.rmtree, _TMP_ROOT, True)
 
 
 class SimplePortalHandler(BaseHTTPRequestHandler):

@@ -165,13 +165,22 @@ def _resource_root() -> Path:
     return Path(__file__).resolve().parent.parent
 
 
+def _icon_candidates() -> list[Path]:
+    """图标候选：打包 _MEIPASS / 项目根（源码） / 包内（pip 安装）。"""
+    return [
+        _resource_root() / "tray.ico",
+        Path(__file__).resolve().parent / "tray.ico",
+    ]
+
+
 def _load_tray_icon():
     """加载托盘图标：优先用 tray.ico（白底黑「水」字），回退系统图标。"""
-    icon_path = _resource_root() / "tray.ico"
-    if icon_path.exists():
-        _user32.LoadImageW.argtypes = [wintypes.HINSTANCE, wintypes.LPCWSTR, wintypes.UINT,
-                                       ctypes.c_int, ctypes.c_int, wintypes.UINT]
-        _user32.LoadImageW.restype = wintypes.HANDLE
+    _user32.LoadImageW.argtypes = [wintypes.HINSTANCE, wintypes.LPCWSTR, wintypes.UINT,
+                                   ctypes.c_int, ctypes.c_int, wintypes.UINT]
+    _user32.LoadImageW.restype = wintypes.HANDLE
+    for icon_path in _icon_candidates():
+        if not icon_path.exists():
+            continue
         # IMAGE_ICON=1, LR_LOADFROMFILE=0x0010
         hicon = _user32.LoadImageW(None, str(icon_path), 1, 0, 0, 0x0010)
         if hicon:

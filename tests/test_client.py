@@ -1,5 +1,8 @@
 """认证客户端测试：用本地模拟门户（复刻工作流契约）验证流程，不触网。"""
+import atexit
 import json
+import shutil
+import tempfile
 import threading
 import unittest
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -11,8 +14,9 @@ from campus_auth.network import NetworkAdapter
 from campus_auth.portal import load_profile
 from campus_auth.state import AuthState
 
-_TMP_ROOT = Path(__file__).resolve().parent / ".tmp"
-_TMP_ROOT.mkdir(exist_ok=True)
+# 临时文件用系统临时目录：测试不依赖仓库可写（只读环境也能跑）
+_TMP_ROOT = Path(tempfile.mkdtemp(prefix="campus-auth-test-"))
+atexit.register(shutil.rmtree, _TMP_ROOT, True)
 
 
 class FakePortalHandler(BaseHTTPRequestHandler):
@@ -220,6 +224,20 @@ class CasDispatchTests(unittest.TestCase):
              patch("campus_auth.cas.authenticate_cas", return_value=cas_result):
             result = client.authenticate(Credentials("alice", "secret", ""))
         self.assertEqual(result.state, AuthState.PENDING)
+
+
+class ClientHelpersTests(unittest.TestCase):
+    def test_ok_accepts_string_code(self):
+        client = Client(load_profile(None), adapter=None)
+        self.assertTrue(client._ok({"code": "200"}))
+        self.assertTrue(client._ok({}))
+        self.assertFalse(client._ok({"code": 400}))
+
+    def test_is_online_delegates_to_internet_probe(self):
+        client = Client(load_profile(None), adapter=None)
+        with patch.object(client, "_internet_ok", return_value=True) as inner:
+            self.assertTrue(client.is_online())
+        inner.assert_called_once()
 
 
 if __name__ == "__main__":

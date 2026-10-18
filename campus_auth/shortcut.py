@@ -26,7 +26,7 @@ def _shortcut_path() -> Path:
 
 
 def _launch_target() -> tuple[str, str]:
-    """快捷方式的目标程序与参数。"""
+    """快捷方式的目标程序与参数（参数已按命令行规则转义，含空格路径也安全）。"""
     if getattr(sys, "frozen", False):
         return str(Path(sys.executable).resolve()), ""
     # 源码：pythonw 运行 tray_app.pyw
@@ -35,7 +35,17 @@ def _launch_target() -> tuple[str, str]:
     pythonw = Path(sys.executable).with_name("pythonw.exe")
     if not pythonw.exists():
         pythonw = Path(sys.executable)
-    return str(pythonw), str(root / "tray_app.pyw")
+    entry = str(root / "tray_app.pyw")
+    return str(pythonw), subprocess.list2cmdline([entry])
+
+
+def _icon_location(target: str) -> str:
+    """快捷方式图标：源码模式用项目根 tray.ico；打包版 exe 已内嵌图标。"""
+    if not getattr(sys, "frozen", False):
+        icon = Path(__file__).resolve().parent.parent / "tray.ico"
+        if icon.exists():
+            return f"{icon},0"
+    return f"{target},0"
 
 
 def create_desktop_shortcut() -> bool:
@@ -43,14 +53,20 @@ def create_desktop_shortcut() -> bool:
     target, args = _launch_target()
     lnk = _shortcut_path()
     workdir = str(Path(target).parent)
+    icon = _icon_location(target)
+
+    def _ps(value) -> str:
+        """PowerShell 单引号字符串转义。"""
+        return str(value).replace("'", "''")
+
     # 用 PowerShell 的 WScript.Shell 创建 .lnk（用 EncodedCommand 避免引号转义问题）
     script = (
         f"$W = New-Object -ComObject WScript.Shell; "
-        f"$S = $W.CreateShortcut('{lnk}'); "
-        f"$S.TargetPath = '{target}'; "
-        f"$S.Arguments = '{args}'; "
-        f"$S.WorkingDirectory = '{workdir}'; "
-        f"$S.IconLocation = '{target},0'; "
+        f"$S = $W.CreateShortcut('{_ps(lnk)}'); "
+        f"$S.TargetPath = '{_ps(target)}'; "
+        f"$S.Arguments = '{_ps(args)}'; "
+        f"$S.WorkingDirectory = '{_ps(workdir)}'; "
+        f"$S.IconLocation = '{_ps(icon)}'; "
         f"$S.Description = '校园网自动登录'; "
         f"$S.Save()"
     )

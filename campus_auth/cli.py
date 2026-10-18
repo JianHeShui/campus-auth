@@ -52,7 +52,7 @@ def cmd_check(args: argparse.Namespace) -> int:
         return 2
     if session_id and client.check_online(session_id):
         return _print_result(_online_result(), client.adapter, args.quiet)
-    if client._internet_ok():
+    if client.is_online():
         return _print_result(_online_result(), client.adapter, args.quiet)
     return _print_result(_pending_result(), client.adapter, args.quiet)
 

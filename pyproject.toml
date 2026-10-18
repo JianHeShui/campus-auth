@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "campus-auth"
-version = "0.2.5"
+version = "0.2.6"
 description = "Windows 校园网自动认证工具（锐捷工作流 / 华三 CAS SSO / 通用登录）"
 readme = "README.md"
 requires-python = ">=3.10"
@@ -22,10 +22,30 @@ dependencies = []
 [project.optional-dependencies]
 # 华三 CAS SSO 模式（AES 密码加密）
 cas = ["pycryptodome>=3.20"]
-dev = []
+dev = ["ruff>=0.6"]
 
 [project.scripts]
 campus-auth = "campus_auth.cli:main"
 
+[project.urls]
+Homepage = "https://github.com/JianHeShui/campus-auth"
+Releases = "https://github.com/JianHeShui/campus-auth/releases"
+Issues = "https://github.com/JianHeShui/campus-auth/issues"
+
 [tool.setuptools]
 packages = ["campus_auth"]
+
+# 托盘图标随包安装（源码运行时优先用项目根的 tray.ico，pip 安装后回退到包内副本）
+[tool.setuptools.package-data]
+campus_auth = ["tray.ico"]
+
+[tool.ruff]
+target-version = "py310"
+line-length = 120
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "UP", "B"]
+ignore = ["E501"]
+
+[tool.ruff.lint.isort]
+known-first-party = ["campus_auth"]
