@@ -308,6 +308,7 @@ class ConfigWindow:
         self.address_var: tk.StringVar | None = None
         self.advanced_visible = False
         self.detect_btn = None
+        self.fetch_btn = None
 
         root.title("校园网认证 · 门户配置")
         # 按屏幕可用区自适应：小屏（1366×768 等）不至于超出屏幕 / 按钮被裁
@@ -562,8 +563,8 @@ class ConfigWindow:
         address_entry.grid(row=3, column=1, columnspan=2, sticky="we", pady=4)
         _bind_context_menu(address_entry)
         card.columnconfigure(1, weight=1)
-        RoundedButton(card, "自动获取", self._auto_fill_address, font_size=9, width=88).grid(
-            row=3, column=3, padx=(8, 0), pady=4)
+        self.fetch_btn = RoundedButton(card, "自动获取", self._auto_fill_address, font_size=9, width=88)
+        self.fetch_btn.grid(row=3, column=3, padx=(8, 0), pady=4)
 
         # 按钮行（独占一行）
         btn_row = tk.Frame(card, bg=C["card"])
@@ -703,19 +704,53 @@ class ConfigWindow:
             "未能自动识别门户类型（可能已联网或门户地址不可达），请核对配置后保存。")
 
     def _auto_fill_address(self) -> None:
-        """断网时自动从网关劫持重定向中提取门户地址并填入。"""
+        """断网时从网关劫持中提取门户地址（后台执行，避免多目标探测时界面卡死）。"""
+        import queue
+        import threading
         from .network import detect_portal_host
-        host = detect_portal_host()
+        q: "queue.Queue" = queue.Queue()
+        self._set_fetch_busy(True)
+
+        def worker() -> None:
+            try:
+                q.put(detect_portal_host())
+            except Exception as exc:  # 探测异常不崩界面
+                q.put((None, [f"探测异常：{type(exc).__name__}: {exc}"]))
+        threading.Thread(target=worker, daemon=True).start()
+        self._poll_fetch(q)
+
+    def _set_fetch_busy(self, busy: bool) -> None:
+        """「自动获取」按钮的进行中状态。"""
+        if getattr(self, "fetch_btn", None) is None:
+            return
+        self.fetch_btn._text = "获取中…" if busy else "自动获取"
+        self.fetch_btn._repaint()
+
+    def _poll_fetch(self, q) -> None:
+        try:
+            host, evidence = q.get_nowait()
+        except Exception:
+            self.root.after(200, lambda: self._poll_fetch(q))
+            return
+        self._set_fetch_busy(False)
+        self._apply_fetched_address(host, evidence)
+
+    def _apply_fetched_address(self, host: str | None, evidence: list[str]) -> None:
+        """展示自动获取结果：成功则填入地址框，失败则给出排查提示。"""
         if host:
-            self.address_var.set(host)
+            if self.address_var is not None:
+                self.address_var.set(host)
             messagebox.showinfo("已获取", f"已自动获取门户地址：{host}")
-        else:
-            messagebox.showinfo(
-                "未获取到",
-                "未能自动获取门户地址。\n\n"
-                "请确保当前处于「未联网」状态（断网）后再点一次：\n"
-                "断网时访问外网会被网关重定向到认证页，据此提取地址。\n"
-                "若已联网，请先断网，或手动填写地址。")
+            return
+        detail = "\n".join(evidence[-8:]) if evidence else "（无探测记录）"
+        messagebox.showinfo(
+            "未获取到",
+            "未能自动获取门户地址。\n\n"
+            "请确认：\n"
+            "1. 已连接校园网（WiFi 或网线）；\n"
+            "2. 当前处于「未认证」状态（浏览器打开任意网站会被跳到认证页）。\n\n"
+            f"探测记录：\n{detail}\n\n"
+            "也可直接手动填写门户地址（如 10.254.241.66）。")
 
     def _probe_async(self, address: str, on_done) -> None:
         """后台探测门户类型；完成后回到 Tk 主线程调用 on_done(result)。"""

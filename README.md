@@ -13,7 +13,7 @@
 
 ## 下载与安装
 
-1. 到 [Releases](https://github.com/JianHeShui/campus-auth/releases) 页面，下载最新版 **`campus-auth-v0.2.7.zip`**（无需安装 Python）。
+1. 到 [Releases](https://github.com/JianHeShui/campus-auth/releases) 页面，下载最新版 **`campus-auth-v0.2.8.zip`**（无需安装 Python）。
 2. 解压 zip 到任意目录（建议单独建一个文件夹）。
 3. 进入该文件夹，双击 `campus-auth.exe` 运行。
 

@@ -23,6 +23,8 @@ import urllib.parse
 from dataclasses import dataclass
 from typing import Iterator, Sequence
 
+from .logutil import write_scrubbed_log
+
 # Windows 上"出站接口"这一 socket 选项的常量。较新的 Python 已内置
 # socket.IP_UNICAST_IF，旧版本没有，回退到其标准值 31。
 try:
@@ -344,42 +346,99 @@ def trigger_windows_ncsi_refresh(timeout: float = 5.0) -> None:
         pass
 
 
+# 断网（未认证）时用于触发网关劫持的探测目标：
+# 域名优先（DNS 正常时），DNS 故障时回退公网 IP 直连（网关同样会劫持 HTTP 流量）。
+_CAPTIVE_PROBE_IPS = ("223.5.5.5", "119.29.29.29", "180.76.76.76", "114.114.114.114")
+
+# 劫持页里门户地址的常见写法（按可靠性排序；最后一条无捕获组，直接取整个 URL）
+_PORTAL_REDIRECT_PATTERNS = (
+    re.compile(r'location\.href\s*=\s*["\']([^"\']+)["\']', re.I),
+    re.compile(r'window\.location\s*=\s*["\']([^"\']+)["\']', re.I),
+    re.compile(r'location\.replace\(\s*["\']([^"\']+)["\']', re.I),
+    re.compile(r'<meta[^>]+http-equiv=["\']?refresh["\']?[^>]+content=["\'][^"\']*?url=([^"\']+)["\']', re.I),
+    re.compile(r'<form[^>]+action=["\'](https?://[^"\']+)["\']', re.I),
+    re.compile(r'https?://[^\s"\'<>]+/(?:eportal|portal)/[^\s"\'<>]*', re.I),
+)
+
+
+def _extract_portal_url(location: str, body: str) -> str:
+    """从重定向响应里提取门户地址；找不到返回空串。
+
+    兼容：302/301 Location 头、JS location.href / window.location / location.replace、
+    meta refresh、登录表单 action，以及正文中出现的第一个 eportal/portal URL。
+    """
+    candidates: list[str] = []
+    if location:
+        candidates.append(location)
+    text = body or ""
+    for pattern in _PORTAL_REDIRECT_PATTERNS:
+        match = pattern.search(text)
+        if match:
+            candidates.append(match.group(1) if pattern.groups else match.group(0))
+    for url in candidates:
+        try:
+            parts = urllib.parse.urlsplit(url.strip())
+        except ValueError:
+            continue
+        host = parts.hostname
+        if not host:
+            continue
+        port = parts.port
+        if port and port not in (80, 443):
+            return f"{host}:{port}"
+        return host
+    return ""
+
+
 def detect_portal_host(probe_url: str = "http://www.baidu.com/",
                        adapter: NetworkAdapter | None = None,
-                       timeout: float = 5.0) -> str | None:
-    """断网时访问外网，从网关劫持中自动提取门户主机地址。
+                       timeout: float = 5.0) -> tuple[str | None, list[str]]:
+    """断网（未认证）时访问外网，从网关劫持中自动提取门户地址。
 
-    校园网 captive portal 两种劫持方式都支持：
-    - 302 重定向：从 Location 头提取主机名；
-    - 200 + JS 跳转：从响应体 location.href="http://门户/..." 提取主机名。
-    若已联网（正常 200、无劫持），返回 None。
+    返回 (host, evidence)：
+    - host：门户主机（非标准端口时形如 "10.0.0.1:8080"）；未取到为 None；
+    - evidence：逐个探测目标的尝试记录，供界面提示与排障。
+
+    DNS 故障时自动回退公网 IP 直连（网关照样劫持 HTTP 流量），
+    支持多种劫持写法（Location / JS / meta refresh / 表单 action / eportal URL）。
     """
     parts = urllib.parse.urlsplit(probe_url)
-    host = parts.hostname or ""
-    path = parts.path or "/"
-    if not host:
-        return None
-    try:
-        conn = BoundHTTPConnection(host, 80, adapter=adapter, timeout=timeout)
-        conn.request("GET", path, headers={"User-Agent": "campus-auth/0.1", "Connection": "close"})
-        response = conn.getresponse()
-        location = response.getheader("Location", "")
-        body = response.read().decode("utf-8", errors="replace")
-        conn.close()
-    except (OSError, ValueError, http.client.HTTPException):
-        return None
+    probe_host = parts.hostname or "www.baidu.com"
+    probe_path = parts.path or "/"
+    probe_scheme = parts.scheme or "http"
 
-    # 1) 302 重定向的 Location 头
-    if location:
-        loc = urllib.parse.urlsplit(location)
-        if loc.hostname:
-            return loc.hostname
+    # (label, host, port, path, use_https)
+    targets: list[tuple[str, str, int, str, bool]] = [
+        (probe_host, probe_host, parts.port or (443 if probe_scheme == "https" else 80),
+         probe_path, probe_scheme == "https"),
+    ]
+    targets += [(ip, ip, 80, "/", False) for ip in _CAPTIVE_PROBE_IPS]
 
-    # 2) 200 + JS location.href 跳转（H3C/深澜等网关）
-    m = re.search(r'location\.href\s*=\s*["\']([^"\']+)["\']', body)
-    if m:
-        loc = urllib.parse.urlsplit(m.group(1))
-        if loc.hostname:
-            return loc.hostname
+    evidence: list[str] = []
+    headers = {"User-Agent": "campus-auth/0.1", "Connection": "close"}
+    for label, host, port, path, use_https in targets:
+        try:
+            if use_https:
+                conn = http.client.HTTPSConnection(
+                    host, port, timeout=timeout, context=ssl.create_default_context())
+            else:
+                conn = BoundHTTPConnection(host, port, adapter=adapter, timeout=timeout)
+            conn.request("GET", path, headers=headers)
+            response = conn.getresponse()
+            status = response.status
+            location = response.getheader("Location", "") or ""
+            body = response.read(65536).decode("utf-8", errors="replace")
+            conn.close()
+        except (OSError, ValueError, http.client.HTTPException) as exc:
+            evidence.append(f"访问 {label} 失败：{type(exc).__name__}: {exc}")
+            write_scrubbed_log(f"portal探测 {label} 连接失败: {exc}")
+            continue
 
-    return None
+        portal = _extract_portal_url(location, body)
+        if portal:
+            evidence.append(f"访问 {label} → HTTP {status}，提取到门户地址 {portal}")
+            write_scrubbed_log(f"portal探测 {label} -> HTTP {status}，门户地址 {portal}")
+            return portal, evidence
+        evidence.append(f"访问 {label} → HTTP {status}，未发现认证页跳转")
+        write_scrubbed_log(f"portal探测 {label} -> HTTP {status}，无门户特征")
+    return None, evidence
