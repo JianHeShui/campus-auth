@@ -37,5 +37,21 @@ class CommandTests(unittest.TestCase):
         self.assertEqual(cmd[1:], ["watch", "--startup"])
 
 
+class ProtectionStatusTests(unittest.TestCase):
+    """托盘保护状态文案（tooltip 与菜单状态行共用）。"""
+
+    def test_status_text(self):
+        self.assertEqual(tray._status_text(True), "保护中")
+        self.assertEqual(tray._status_text(False), "未保护")
+
+    def test_tray_tip_contains_state(self):
+        self.assertIn("保护中", tray._tray_tip(True))
+        self.assertIn("未保护", tray._tray_tip(False))
+        self.assertIn("校园网", tray._tray_tip(True))
+
+    def test_status_poll_interval_sane(self):
+        self.assertGreaterEqual(tray.STATUS_POLL_MS, 1000)
+
+
 if __name__ == "__main__":
     unittest.main()

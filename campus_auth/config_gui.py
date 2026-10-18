@@ -239,9 +239,9 @@ TUTORIAL_TEXT = """这个工具帮你自动登录校园网：配置一次，即�
 ③ 一键生成配置
    点「一键生成配置」，接口细节自动填好
 
-④ 开始自动登录
-   点底部「开始自动登录」，填写账号、密码、运营商，
-   程序即在后台守护，断线自动重连
+④ 开始自动保护
+   点底部「开始自动保护」，填写账号、密码、运营商，
+   程序即在后台守护，断线自动重连（再次点击会自动重启保护）
 
 ⑤ 开机自启（可选）
    勾选后，重启电脑自动以托盘运行
@@ -630,11 +630,77 @@ class ConfigWindow:
         self.refresh_preview()
 
     def _quick_generate(self) -> None:
-        """按所选模板 + 地址生成配置。"""
-        self._apply_template_and_address(
-            self.template_var.get() if self.template_var else None,
-            self.address_var.get() if self.address_var else None)
-        messagebox.showinfo("已生成", "配置已按所选模板生成。\n\n如需修改接口路径、字段名等细节，请点「高级设置」。\n确认无误后点底部「保存 JSON」。")
+        """按所选模板生成配置，并自动探测门户类型；与所选不一致时提醒。"""
+        selected = self.template_var.get() if self.template_var else None
+        address = self.address_var.get().strip() if self.address_var else ""
+        self._apply_template_and_address(selected, address)
+        if not address:
+            messagebox.showinfo(
+                "已生成",
+                "配置已按所选模板生成。\n\n如需自动校验门户类型，请先填写门户地址。")
+            return
+        # 后台探测一次：不阻塞界面；探测结果用于校验「所选类型」是否与实际门户一致
+        self._probe_async(address, self._on_generate_probe_done)
+
+    @staticmethod
+    def _detect_consistency(selected: str | None, detected: str | None) -> str:
+        """比较「用户所选类型」与「自动探测类型」。
+
+        返回：
+        - "unknown"：未探测出类型（可能已联网 / 地址不可达）
+        - "match"：一致
+        - "custom"：用户选了自定义模板，探测结果仅提示、不强制替换
+        - "mismatch"：不一致（应提醒是否切换）
+        """
+        if not detected:
+            return "unknown"
+        if selected == detected:
+            return "match"
+        if not selected or selected.startswith("自定义"):
+            return "custom"
+        return "mismatch"
+
+    def _on_generate_probe_done(self, result: dict) -> None:
+        """「一键生成配置」的探测回调：类型不一致时询问是否改用探测结果。"""
+        selected = self.template_var.get() if self.template_var else None
+        detected = result.get("template")
+        state = self._detect_consistency(selected, detected)
+        elapsed = result.get("elapsed")
+        meta = f"（耗时 {elapsed:.2f}s）" if isinstance(elapsed, (int, float)) else ""
+        if state == "match":
+            messagebox.showinfo(
+                "已生成",
+                f"配置已按「{selected}」生成，自动探测确认门户类型一致。{meta}\n\n"
+                "点「保存 JSON」或直接「开始自动保护」即可。")
+            return
+        if state == "mismatch":
+            switch = messagebox.askyesno(
+                "门户类型不一致",
+                f"自动探测到的门户类型是「{detected}」，与您选择的「{selected}」不一致。{meta}\n\n"
+                f"是否改用「{detected}」重新生成配置？\n\n"
+                "（若不确定，建议选择「是」；也可稍后点「自动探测类型」手动确认）")
+            if switch:
+                if self.template_var is not None:
+                    self.template_var.set(detected)
+                self._apply_template_and_address(
+                    detected, self.address_var.get() if self.address_var else None)
+                messagebox.showinfo("已更新", f"已按探测结果「{detected}」重新生成配置。")
+            else:
+                messagebox.showinfo(
+                    "已保留",
+                    f"已保留您选择的「{selected}」。\n\n"
+                    "如果认证失败，建议点「自动探测类型」重新确认。")
+            return
+        if state == "custom":
+            messagebox.showinfo(
+                "已生成",
+                f"配置已生成。自动探测识别为「{detected}」{meta}；\n"
+                "您当前选择的是「自定义」，已保留手填内容，如需自动填充可点「自动探测类型」。")
+            return
+        messagebox.showinfo(
+            "已生成",
+            "配置已按所选模板生成。\n\n"
+            "未能自动识别门户类型（可能已联网或门户地址不可达），请核对配置后保存。")
 
     def _auto_fill_address(self) -> None:
         """断网时自动从网关劫持重定向中提取门户地址并填入。"""
@@ -651,12 +717,8 @@ class ConfigWindow:
                 "断网时访问外网会被网关重定向到认证页，据此提取地址。\n"
                 "若已联网，请先断网，或手动填写地址。")
 
-    def _auto_detect(self) -> None:
-        """后台探测门户类型，识别后自动填充模板。"""
-        address = self.address_var.get().strip() if self.address_var else ""
-        if not address:
-            messagebox.showwarning("提示", "请先填写门户地址")
-            return
+    def _probe_async(self, address: str, on_done) -> None:
+        """后台探测门户类型；完成后回到 Tk 主线程调用 on_done(result)。"""
         import queue
         import threading
         from .detect import probe_portal
@@ -670,7 +732,16 @@ class ConfigWindow:
                 q.put({"recognized": False, "type": None, "template": None, "mode": "simple",
                        "message": f"探测失败：{exc}", "evidence": [], "elapsed": 0.0})
         threading.Thread(target=worker, daemon=True).start()
-        self._poll_detect(q)
+        self._poll_probe(q, on_done)
+
+    def _poll_probe(self, q, on_done) -> None:
+        try:
+            result = q.get_nowait()
+        except Exception:
+            self.root.after(200, lambda: self._poll_probe(q, on_done))
+            return
+        self._set_detect_busy(False)
+        on_done(result)
 
     def _set_detect_busy(self, busy: bool) -> None:
         """探测期间给按钮一个进行中状态，避免用户以为界面卡死。"""
@@ -679,14 +750,13 @@ class ConfigWindow:
         self.detect_btn._text = "探测中…" if busy else "自动探测类型"
         self.detect_btn._repaint()
 
-    def _poll_detect(self, q) -> None:
-        try:
-            result = q.get_nowait()
-        except Exception:
-            self.root.after(200, lambda: self._poll_detect(q))
+    def _auto_detect(self) -> None:
+        """后台探测门户类型，识别后自动填充模板。"""
+        address = self.address_var.get().strip() if self.address_var else ""
+        if not address:
+            messagebox.showwarning("提示", "请先填写门户地址")
             return
-        self._set_detect_busy(False)
-        self._on_detect_result(result)
+        self._probe_async(address, self._on_detect_result)
 
     def _on_detect_result(self, result: dict) -> None:
         template = result.get("template")
@@ -823,7 +893,7 @@ class ConfigWindow:
         footer.pack(side="bottom", fill="x", padx=18, pady=(0, 14))
         self.footer_widget = footer
 
-        tk.Label(footer, text="提示：「开始自动登录」会自动保存配置，无需手动点「保存 JSON」。",
+        tk.Label(footer, text="提示：「开始自动保护」会自动保存配置，无需手动点「保存 JSON」。",
                  bg=C["page"], fg=C["muted"], font=(F["ui"], 9)).pack(anchor="w", pady=(0, 10))
 
         buttons = tk.Frame(footer, bg=C["page"])
@@ -844,7 +914,7 @@ class ConfigWindow:
         row2.pack(fill="x")
         row2.grid_columnconfigure(0, weight=1)  # 左侧留白伸缩
         b4 = RoundedButton(row2, "重新输入账号密码", self._reenter_credentials, width=170)
-        b5 = RoundedButton(row2, "开始自动登录", self._start_autologin,
+        b5 = RoundedButton(row2, "开始自动保护", self._start_autologin,
                            fill=C["primary"], fg=C["white"], border=C["primary"],
                            hover_fill=C["primary_hover"], hover_border=C["primary_hover"], gradient_to=C["primary_hover"],
                            bold=True, width=170)
@@ -853,7 +923,7 @@ class ConfigWindow:
         row2.grid_columnconfigure(1, minsize=b4._btn_w)
         row2.grid_columnconfigure(2, minsize=b5._btn_w)
 
-    # ---- 开始自动登录 ----
+    # ---- 开始自动保护 ----
 
     def _reenter_credentials(self) -> None:
         """重新输入账号密码并保存（用于密码错误后更正）。"""
@@ -866,14 +936,14 @@ class ConfigWindow:
         except OSError as exc:
             messagebox.showerror("保存失败", f"无法保存账号密码：{exc}")
             return
-        messagebox.showinfo("已更新", "账号密码已更新，下次自动登录将使用新密码。")
+        messagebox.showinfo("已更新", "账号密码已更新，下次自动保护将使用新密码。")
 
     def _start_autologin(self) -> None:
-        """保存配置 → 确认账号密码 → 启动独立后台守护进程。"""
+        """保存配置 → 确认账号密码 → 启动（或重启）独立后台保护进程。"""
         # 1) 保存配置到工具目录（先做输入校验，避免把非法配置写进 portal.json）
         data, error = self._collect_safe()
         if error:
-            messagebox.showerror("配置有误", f"请先修正以下问题再开始自动登录：\n\n{error}")
+            messagebox.showerror("配置有误", f"请先修正以下问题再开始自动保护：\n\n{error}")
             return
         portal_file = _tool_root() / "portal.json"
         try:
@@ -896,23 +966,26 @@ class ConfigWindow:
                 messagebox.showerror("保存失败", f"无法保存账号密码：{exc}")
                 return
 
-        # 3) 启动独立守护进程（与托盘 / 开机自启共用同一单实例）
-        from .daemon import is_running, start
-        if is_running():
-            messagebox.showinfo(
-                "已在运行",
-                "自动登录守护已在后台运行。\n\n"
-                "如需重启，请先在托盘菜单点「停止自动登录」，再重新点「开始自动登录」。")
-            return
+        # 3) 启动（或重启）独立保护进程：若已在保护中，先停止再启动，让新配置生效
+        from .daemon import is_running, start, stop
+        was_running = is_running()
+        if was_running:
+            stop()
         if not start():
             messagebox.showerror(
                 "启动失败",
-                "无法启动后台守护进程。\n\n请确认程序目录完整，或改用托盘菜单「开始自动登录」重试。")
+                "无法启动后台保护进程。\n\n请确认程序目录完整，或改用托盘菜单「开始保护」重试。")
             return
-        messagebox.showinfo(
-            "已开始",
-            f"自动登录已在后台独立进程运行。\n\n配置已保存到：{portal_file}\n"
-            f"账号密码保存在：{_credentials_file_hint()}\n\n关闭本窗口不影响后台运行。")
+        if was_running:
+            messagebox.showinfo(
+                "已重新开始保护",
+                f"保护已重新启动，新配置已生效。\n\n配置已保存到：{portal_file}\n"
+                f"账号密码保存在：{_credentials_file_hint()}\n\n关闭本窗口不影响后台运行。")
+        else:
+            messagebox.showinfo(
+                "已开始保护",
+                f"自动保护已在后台独立进程运行。\n\n配置已保存到：{portal_file}\n"
+                f"账号密码保存在：{_credentials_file_hint()}\n\n关闭本窗口不影响后台运行。")
 
     def _prompt_credentials(self):
         """弹窗输入账号密码与运营商，返回 Credentials 或 None。"""
