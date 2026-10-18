@@ -116,11 +116,11 @@ class InternetOkByIpTests(unittest.TestCase):
 class ExtractPortalUrlTests(unittest.TestCase):
     def test_location_header(self):
         self.assertEqual(network._extract_portal_url(
-            "http://10.254.241.66/eportal/index.jsp?wlanuserip=1.2.3.4", ""), "10.254.241.66")
+            "http://10.0.0.1/eportal/index.jsp?wlanuserip=1.2.3.4", ""), "10.0.0.1")
 
     def test_js_location_href(self):
-        body = '<script>location.href="http://10.254.241.66/eportal/index.jsp?x=1"</script>'
-        self.assertEqual(network._extract_portal_url("", body), "10.254.241.66")
+        body = '<script>location.href="http://10.0.0.1/eportal/index.jsp?x=1"</script>'
+        self.assertEqual(network._extract_portal_url("", body), "10.0.0.1")
 
     def test_meta_refresh(self):
         body = '<meta http-equiv="refresh" content="0;url=http://portal.example.edu.cn/portal/">'
@@ -164,30 +164,30 @@ class DetectPortalHostTests(unittest.TestCase):
 
     def test_uses_location_redirect(self):
         factory = self._conn_factory({
-            "www.baidu.com": (302, "http://10.254.241.66/eportal/index.jsp?x=1", ""),
+            "www.baidu.com": (302, "http://10.0.0.1/eportal/index.jsp?x=1", ""),
         })
         with patch.object(network, "BoundHTTPConnection", side_effect=factory):
             host, evidence = network.detect_portal_host()
-        self.assertEqual(host, "10.254.241.66")
+        self.assertEqual(host, "10.0.0.1")
         self.assertTrue(any("302" in line for line in evidence))
 
     def test_js_redirect_in_body(self):
         factory = self._conn_factory({
             "www.baidu.com": (200, "",
-                              '<script>location.href="http://10.254.241.66/eportal/index.jsp"</script>'),
+                              '<script>location.href="http://10.0.0.1/eportal/index.jsp"</script>'),
         })
         with patch.object(network, "BoundHTTPConnection", side_effect=factory):
             host, _ = network.detect_portal_host()
-        self.assertEqual(host, "10.254.241.66")
+        self.assertEqual(host, "10.0.0.1")
 
     def test_dns_failure_falls_back_to_public_ip(self):
         factory = self._conn_factory({
             "www.baidu.com": OSError("getaddrinfo failed"),
-            "223.5.5.5": (302, "http://10.254.241.66/eportal/index.jsp", ""),
+            "223.5.5.5": (302, "http://10.0.0.1/eportal/index.jsp", ""),
         })
         with patch.object(network, "BoundHTTPConnection", side_effect=factory):
             host, evidence = network.detect_portal_host()
-        self.assertEqual(host, "10.254.241.66")
+        self.assertEqual(host, "10.0.0.1")
         self.assertTrue(any("失败" in line for line in evidence))
 
     def test_all_targets_fail_returns_none_with_evidence(self):

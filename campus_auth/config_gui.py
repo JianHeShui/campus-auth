@@ -750,7 +750,7 @@ class ConfigWindow:
             "1. 已连接校园网（WiFi 或网线）；\n"
             "2. 当前处于「未认证」状态（浏览器打开任意网站会被跳到认证页）。\n\n"
             f"探测记录：\n{detail}\n\n"
-            "也可直接手动填写门户地址（如 10.254.241.66）。")
+            "也可直接手动填写门户地址（如 10.0.0.1）。")
 
     def _probe_async(self, address: str, on_done) -> None:
         """后台探测门户类型；完成后回到 Tk 主线程调用 on_done(result)。"""
