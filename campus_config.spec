@@ -24,6 +24,8 @@ a = Analysis(
         "campus_auth.shortcut",
         "campus_auth.cas",
         "campus_auth.crypto",
+        "campus_auth.daemon",
+        "campus_auth.logutil",
     ] + _crypto_hidden,
     hookspath=[],
     hooksconfig={},
