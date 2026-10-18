@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "campus-auth"
-version = "0.2.4"
+version = "0.2.5"
 description = "Windows 校园网自动认证工具（锐捷工作流 / 华三 CAS SSO / 通用登录）"
 readme = "README.md"
 requires-python = ">=3.10"

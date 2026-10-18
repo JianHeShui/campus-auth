@@ -4,6 +4,7 @@ import threading
 import unittest
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
+from unittest.mock import patch
 
 from campus_auth.client import Client, Credentials
 from campus_auth.network import NetworkAdapter
@@ -159,6 +160,66 @@ class ClientTests(unittest.TestCase):
         creds = Credentials("alice", "secret", "")
         self.assertNotIn("secret", creds.redact("错误 secret 和 alice"))
         self.assertIn("[已隐藏]", creds.redact("错误 secret"))
+
+
+class CasDispatchTests(unittest.TestCase):
+    """CAS 模式状态分派：CAS 登录成功 ≠ 已上线；工作流失败时应 PENDING 并带真实原因。"""
+
+    @staticmethod
+    def _client() -> Client:
+        file = _TMP_ROOT / "cas_profile.json"
+        file.write_text(json.dumps({"auth_mode": "cas"}), encoding="utf-8")
+        return Client(load_profile(file), adapter=None, timeout=5)
+
+    def test_workflow_confirmed_and_internet_ok_is_online(self):
+        client = self._client()
+        cas_result = {"ok": True, "message": "认证成功（已上线）",
+                      "detail": {"online_confirmed": True}}
+        with patch.object(client, "_internet_ok", side_effect=[False, True]), \
+             patch("campus_auth.cas.authenticate_cas", return_value=cas_result):
+            result = client.authenticate(Credentials("alice", "secret", ""))
+        self.assertEqual(result.state, AuthState.ONLINE)
+
+    def test_workflow_failed_keeps_pending_with_reason(self):
+        client = self._client()
+        cas_result = {
+            "ok": True,
+            "message": "CAS 认证成功（上线状态待确认）",
+            "detail": {"online_confirmed": False, "workflow_error": "工作流 userOnline 未上线"},
+        }
+        with patch.object(client, "_internet_ok", side_effect=[False, False]), \
+             patch("campus_auth.cas.authenticate_cas", return_value=cas_result):
+            result = client.authenticate(Credentials("alice", "secret", ""))
+        self.assertEqual(result.state, AuthState.PENDING)
+        self.assertIn("工作流上线未确认", result.message)
+        self.assertIn("userOnline", result.message)
+
+    def test_confirmed_but_internet_unreachable_is_pending(self):
+        client = self._client()
+        cas_result = {"ok": True, "message": "认证成功（已上线）",
+                      "detail": {"online_confirmed": True}}
+        with patch.object(client, "_internet_ok", side_effect=[False, False]), \
+             patch("campus_auth.cas.authenticate_cas", return_value=cas_result):
+            result = client.authenticate(Credentials("alice", "secret", ""))
+        self.assertEqual(result.state, AuthState.PENDING)
+
+    def test_wrong_password_is_error(self):
+        client = self._client()
+        cas_result = {"ok": False, "message": "CAS 登录失败 (HTTP 200)",
+                      "detail": {"body": "用户不存在或者密码错误"}}
+        with patch.object(client, "_internet_ok", return_value=False), \
+             patch("campus_auth.cas.authenticate_cas", return_value=cas_result):
+            result = client.authenticate(Credentials("alice", "secret", ""))
+        self.assertEqual(result.state, AuthState.ERROR)
+        self.assertIn("密码", result.message)
+
+    def test_network_error_becomes_pending(self):
+        client = self._client()
+        cas_result = {"ok": False, "message": "captive探测失败: 连接超时", "detail": {}}
+        with patch.object(client, "_internet_ok", return_value=False), \
+             patch("campus_auth.cas.authenticate_cas", return_value=cas_result):
+            result = client.authenticate(Credentials("alice", "secret", ""))
+        self.assertEqual(result.state, AuthState.PENDING)
 
 
 if __name__ == "__main__":

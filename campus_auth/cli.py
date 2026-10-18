@@ -97,62 +97,68 @@ def cmd_configure(args: argparse.Namespace) -> int:
 
 def cmd_watch(args: argparse.Namespace) -> int:
     """静默守护：按退避策略周期重试。"""
+    from .daemon import MUTEX_NAME, clear_pid_file, write_pid_file
+
     # 单实例：已有守护循环在运行则直接退出，避免重复进程
     import ctypes
     kernel32 = ctypes.windll.kernel32
-    mutex = kernel32.CreateMutexW(None, False, "CampusAuthWatch")
+    mutex = kernel32.CreateMutexW(None, False, MUTEX_NAME)
     if not mutex:
         return 1
     if kernel32.GetLastError() == 183:  # ERROR_ALREADY_EXISTS
         kernel32.CloseHandle(mutex)
         return 0
+    write_pid_file()  # 记录 PID，供托盘 / 配置界面停止本进程
 
-    # 开机自启模式：先延时，等网卡与网络就绪
-    if getattr(args, "startup", False) and getattr(args, "delay", 0) > 0:
-        time.sleep(args.delay)
-
-    client = _build_client(args)
     try:
-        credentials = load_credentials()
-    except ConfigError as exc:
-        print(f"配置错误: {exc}", file=sys.stderr)
-        return 2
+        # 开机自启模式：先延时，等网卡与网络就绪
+        if getattr(args, "startup", False) and getattr(args, "delay", 0) > 0:
+            time.sleep(args.delay)
 
-    policy = RetryPolicy(cap=args.max_interval)
-    interval = args.interval
-    was_online = False
-    while True:
-        if not policy.should_try():
-            time.sleep(1)
-            continue
+        client = _build_client(args)
         try:
-            result = client.authenticate(credentials)
-        except AuthError as exc:
-            result = None
-            if not args.quiet:
-                print(f"[{time.strftime('%H:%M:%S')}] 错误: {credentials.redact(str(exc))}", flush=True)
-        if result is not None:
-            if result.state == AuthState.ONLINE:
-                policy.on_success()
-                # 首次上线时刷新 Windows NCSI 状态指示器（避免每轮都刷）
-                if not was_online:
-                    trigger_windows_ncsi_refresh()
-                    was_online = True
+            credentials = load_credentials()
+        except ConfigError as exc:
+            print(f"配置错误: {exc}", file=sys.stderr)
+            return 2
+
+        policy = RetryPolicy(cap=args.max_interval)
+        interval = args.interval
+        was_online = False
+        while True:
+            if not policy.should_try():
+                time.sleep(1)
+                continue
+            try:
+                result = client.authenticate(credentials)
+            except AuthError as exc:
+                result = None
                 if not args.quiet:
-                    print(f"[{time.strftime('%H:%M:%S')}] 已联网", flush=True)
-            elif result.state == AuthState.ERROR:
-                was_online = False
-                if not args.quiet:
-                    print(f"[{time.strftime('%H:%M:%S')}] {result.message}", flush=True)
-                # 明确失败（账号密码错等）不无限重试，等待人工介入
-                break
-            elif result.state == AuthState.PENDING:
-                policy.on_pending()
-            else:
-                was_online = False
-                policy.on_failure()
-        time.sleep(interval)
-    return 1
+                    print(f"[{time.strftime('%H:%M:%S')}] 错误: {credentials.redact(str(exc))}", flush=True)
+            if result is not None:
+                if result.state == AuthState.ONLINE:
+                    policy.on_success()
+                    # 首次上线时刷新 Windows NCSI 状态指示器（避免每轮都刷）
+                    if not was_online:
+                        trigger_windows_ncsi_refresh()
+                        was_online = True
+                    if not args.quiet:
+                        print(f"[{time.strftime('%H:%M:%S')}] 已联网", flush=True)
+                elif result.state == AuthState.ERROR:
+                    was_online = False
+                    if not args.quiet:
+                        print(f"[{time.strftime('%H:%M:%S')}] {result.message}", flush=True)
+                    # 明确失败（账号密码错等）不无限重试，等待人工介入
+                    break
+                elif result.state == AuthState.PENDING:
+                    policy.on_pending()
+                else:
+                    was_online = False
+                    policy.on_failure()
+            time.sleep(interval)
+        return 1
+    finally:
+        clear_pid_file()
 
 
 def cmd_autostart(args: argparse.Namespace) -> int:

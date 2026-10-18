@@ -1,7 +1,7 @@
 """系统托盘：用 Shell_NotifyIcon（ctypes，纯标准库）实现常驻托盘图标。
 
-托盘右键菜单：打开配置 / 开始自动登录 / 退出；左键双击打开配置。
-「打开配置」「开始自动登录」用独立进程启动，关闭托盘不影响它们。
+托盘右键菜单：配置 / 开始自动登录 / 停止自动登录 / 退出；左键双击打开配置。
+「配置」「开始自动登录」用独立进程启动；退出托盘会一并停止守护进程。
 """
 from __future__ import annotations
 
@@ -37,6 +37,11 @@ MF_SEPARATOR = 0x0800
 ID_OPEN = 1001
 ID_START = 1002
 ID_EXIT = 1003
+ID_STOP = 1004
+
+MB_OK = 0x0000
+MB_ICONWARNING = 0x0030
+MB_ICONINFORMATION = 0x0040
 
 # ---- Win32 结构体 ----
 WNDPROC = ctypes.WINFUNCTYPE(ctypes.c_longlong, wintypes.HWND, wintypes.UINT,
@@ -127,6 +132,24 @@ _kernel32.GetModuleHandleW.argtypes = [wintypes.LPCWSTR]
 _kernel32.GetModuleHandleW.restype = wintypes.HMODULE
 _shell32.Shell_NotifyIconW.argtypes = [wintypes.DWORD, ctypes.POINTER(NOTIFYICONDATAW)]
 _shell32.Shell_NotifyIconW.restype = wintypes.BOOL
+_user32.MessageBoxW.argtypes = [wintypes.HWND, wintypes.LPCWSTR, wintypes.LPCWSTR, wintypes.UINT]
+_user32.MessageBoxW.restype = ctypes.c_int
+
+
+def _safe_print(msg: str) -> None:
+    """windowed（pythonw / frozen）下 sys.stderr 可能为 None，打印失败静默。"""
+    try:
+        print(msg, file=sys.stderr)
+    except Exception:
+        pass
+
+
+def _notify(title: str, text: str, icon: int = MB_ICONINFORMATION) -> None:
+    """弹系统消息框（托盘菜单操作的反馈），失败静默。"""
+    try:
+        _user32.MessageBoxW(None, text, title, MB_OK | icon)
+    except Exception:
+        pass
 
 
 def _tool_root() -> Path:
@@ -172,11 +195,6 @@ def open_config() -> None:
                      creationflags=_no_window_flag())
 
 
-def start_watch() -> None:
-    subprocess.Popen(_python_command("watch", "--startup"), cwd=str(_tool_root()),
-                     creationflags=_no_window_flag())
-
-
 class TrayIcon:
     def __init__(self, tip: str = "校园网认证"):
         self._proc = WNDPROC(self._wnd_proc)  # 保持引用，防 GC
@@ -216,8 +234,8 @@ class TrayIcon:
         ok = _shell32.Shell_NotifyIconW(NIM_ADD, ctypes.byref(nid))
         if not ok:
             err = _kernel32.GetLastError()
-            print(f"[警告] 托盘图标添加失败 (错误 {err}: {ctypes.FormatError(err)})", file=sys.stderr)
-            print("      若在 Windows 11，请点击任务栏 ^ 箭头查看隐藏图标区。", file=sys.stderr)
+            _safe_print(f"[警告] 托盘图标添加失败 (错误 {err}: {ctypes.FormatError(err)})")
+            _safe_print("      若在 Windows 11，请点击任务栏 ^ 箭头查看隐藏图标区。")
 
     def _delete(self) -> None:
         nid = NOTIFYICONDATAW()
@@ -231,6 +249,8 @@ class TrayIcon:
     def _show_menu(self) -> None:
         menu = _user32.CreatePopupMenu()
         _user32.AppendMenuW(menu, MF_STRING, ID_OPEN, "配置")
+        _user32.AppendMenuW(menu, MF_STRING, ID_START, "开始自动登录")
+        _user32.AppendMenuW(menu, MF_STRING, ID_STOP, "停止自动登录")
         _user32.AppendMenuW(menu, MF_SEPARATOR, 0, None)
         _user32.AppendMenuW(menu, MF_STRING, ID_EXIT, "退出")
 
@@ -255,8 +275,24 @@ class TrayIcon:
             if cmd_id == ID_OPEN:
                 open_config()
             elif cmd_id == ID_START:
-                start_watch()
+                from .daemon import is_running, start
+                if is_running():
+                    _notify("自动登录", "自动登录已在后台运行。")
+                elif start():
+                    _notify("自动登录", "已开始自动登录（后台守护进程运行中）。")
+                else:
+                    _notify("自动登录", "启动失败。\n请先点「配置」填写门户信息并保存账号密码。", MB_ICONWARNING)
+            elif cmd_id == ID_STOP:
+                from .daemon import is_running, stop
+                if not is_running():
+                    _notify("自动登录", "自动登录当前未在运行。")
+                elif stop():
+                    _notify("自动登录", "已停止自动登录。")
+                else:
+                    _notify("自动登录", "停止失败，请稍后重试。", MB_ICONWARNING)
             elif cmd_id == ID_EXIT:
+                from .daemon import stop as daemon_stop
+                daemon_stop()  # 退出托盘时一并结束守护，避免残留后台进程
                 self._delete()
                 _user32.DestroyWindow(hwnd)
                 _user32.PostQuitMessage(0)
@@ -298,11 +334,12 @@ def run_tray() -> int:
     # 单实例：已有托盘在运行则直接退出，避免多次双击产生重复进程
     if not _acquire_tray_single_instance():
         return 0
-    # 已配置账号密码时自动开始守护循环，无需手动点「开始自动登录」
+    # 已配置账号密码时自动开始守护循环（独立进程；已在运行则不会重复启动）
     try:
         from .config import load_credentials
+        from .daemon import start
         load_credentials()
-        start_watch()
+        start()
     except Exception:
         pass  # 未配置凭据或启动失败则静默跳过，等用户手动开始
     tray = TrayIcon()

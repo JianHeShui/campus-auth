@@ -929,7 +929,7 @@ class ConfigWindow:
         messagebox.showinfo("已更新", "账号密码已更新，下次自动登录将使用新密码。")
 
     def _start_autologin(self) -> None:
-        """保存配置 → 确认账号密码 → 后台启动守护循环。"""
+        """保存配置 → 确认账号密码 → 启动独立后台守护进程。"""
         # 1) 保存配置到工具目录
         data = self._collect()
         portal_file = _tool_root() / "portal.json"
@@ -940,10 +940,9 @@ class ConfigWindow:
             return
 
         # 2) 确认账号密码
-        from .client import Credentials
         from .config import ConfigError, load_credentials, save_credentials
         try:
-            credentials = load_credentials()
+            load_credentials()
         except ConfigError:
             credentials = self._prompt_credentials()
             if credentials is None:
@@ -954,10 +953,23 @@ class ConfigWindow:
                 messagebox.showerror("保存失败", f"无法保存账号密码：{exc}")
                 return
 
-        # 3) 后台启动守护循环
-        import threading
-        threading.Thread(target=self._watch_worker, args=(portal_file, credentials), daemon=True).start()
-        messagebox.showinfo("已开始", f"自动登录已在后台运行。\n\n配置已保存到：{portal_file}\n账号密码保存在：{_credentials_file_hint()}\n\n关闭本窗口不影响后台运行。")
+        # 3) 启动独立守护进程（与托盘 / 开机自启共用同一单实例）
+        from .daemon import is_running, start
+        if is_running():
+            messagebox.showinfo(
+                "已在运行",
+                "自动登录守护已在后台运行。\n\n"
+                "如需重启，请先在托盘菜单点「停止自动登录」，再重新点「开始自动登录」。")
+            return
+        if not start():
+            messagebox.showerror(
+                "启动失败",
+                "无法启动后台守护进程。\n\n请确认程序目录完整，或改用托盘菜单「开始自动登录」重试。")
+            return
+        messagebox.showinfo(
+            "已开始",
+            f"自动登录已在后台独立进程运行。\n\n配置已保存到：{portal_file}\n"
+            f"账号密码保存在：{_credentials_file_hint()}\n\n关闭本窗口不影响后台运行。")
 
     def _prompt_credentials(self):
         """弹窗输入账号密码与运营商，返回 Credentials 或 None。"""
@@ -1007,73 +1019,6 @@ class ConfigWindow:
         if not result or not result.get("username") or not result.get("password"):
             return None
         return Credentials(result["username"], result["password"], result.get("service", ""))
-
-    def _watch_worker(self, portal_file, credentials) -> None:
-        """后台守护线程：周期检测 + 登录 + 退避重试。"""
-        import time
-        from .client import Client
-        from .network import enumerate_interfaces, pick_adapter, trigger_windows_ncsi_refresh
-        from .portal import load_profile
-        from .state import AuthState, RetryPolicy
-        try:
-            profile = load_profile(portal_file)
-        except Exception as exc:
-            self._report_error(f"配置文件加载失败：{exc}")
-            return
-        adapter = pick_adapter(enumerate_interfaces())
-        client = Client(profile, adapter=adapter)
-        policy = RetryPolicy()
-        error_shown = False  # 避免同一错误重复弹窗
-        was_online = False
-        while True:
-            if not policy.should_try():
-                time.sleep(1)
-                continue
-            # 每次认证前重新枚举网卡（IP 可能因断网重连变化，避免源地址绑定失败）
-            fresh_adapter = pick_adapter(enumerate_interfaces())
-            if fresh_adapter is not None:
-                client.adapter = fresh_adapter
-            try:
-                result = client.authenticate(credentials)
-            except Exception as exc:
-                result = None
-                if not error_shown:
-                    error_shown = True
-                    self._report_error(f"认证过程发生错误：{exc}")
-            if result is not None:
-                if result.state == AuthState.ONLINE:
-                    policy.on_success()
-                    error_shown = False  # 成功后重置，允许下次再报告
-                    # 首次上线时刷新 Windows NCSI 状态指示器
-                    if not was_online:
-                        trigger_windows_ncsi_refresh()
-                        was_online = True
-                elif result.state == AuthState.ERROR:
-                    was_online = False
-                    msg = result.message or ""
-                    if "密码" in msg or "账号" in msg or "用户不存在" in msg:
-                        # 账号密码错误：提示用户用「重新输入账号密码」更正
-                        self._report_error(f"账号或密码错误。\n\n{msg}\n\n请点【重新输入账号密码】更正后，再点【开始自动登录】。")
-                    else:
-                        self._report_error(f"认证失败：{msg}")
-                    break
-                elif result.state == AuthState.PENDING:
-                    policy.on_pending()
-                else:
-                    was_online = False
-                    policy.on_failure()
-            time.sleep(15)
-
-    def _report_error(self, msg: str) -> None:
-        """在主线程弹出错误报告对话框。"""
-        def _show():
-            messagebox.showerror(
-                "认证错误报告",
-                f"{msg}\n\n详细信息请查看：\nC:\\Users\\{Path.home().name}\\.campus-auth\\auth-debug.log")
-        try:
-            self.root.after(0, _show)
-        except Exception:
-            pass
 
     # ---- 数据装配 ----
 

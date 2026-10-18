@@ -13,26 +13,21 @@ import http.client
 import re
 import time
 import urllib.parse
-from pathlib import Path
 
 from .crypto import aes_ecb_pkcs7_encrypt_b64, has_crypto
+from .logutil import mask, scrub, write_log
 from .network import BoundHTTPConnection, NetworkAdapter
 
 # 认证页 HTML 里承载动态参数的隐藏元素 id
 ID_CROYPTO = "login-croypto"        # AES 密钥（base64）
 ID_EXECUTION = "login-page-flowkey"  # CAS flow execution key
 
-_CAS_LOG = Path.home() / ".campus-auth" / "auth-debug.log"
+UA = "campus-auth/0.1"
 
 
 def _cas_log(msg: str) -> None:
-    """追加写 CAS 调试日志（失败静默）。"""
-    try:
-        _CAS_LOG.parent.mkdir(parents=True, exist_ok=True)
-        with open(_CAS_LOG, "a", encoding="utf-8") as f:
-            f.write(f"[{time.strftime('%Y-%m-%d %H:%M:%S')}] {msg}\n")
-    except OSError:
-        pass
+    """写 CAS 调试日志（logutil 负责字段脱敏与轮转，失败静默）。"""
+    write_log(scrub(msg))
 
 
 def _extract_element(html: str, element_id: str) -> str | None:
@@ -45,6 +40,80 @@ def _extract_element(html: str, element_id: str) -> str | None:
         if m:
             return m.group(1).strip()
     return None
+
+
+def _parse_set_cookie(headers) -> dict[str, str]:
+    """解析一次响应里的全部 Set-Cookie，返回 name=value（丢弃 Path/HttpOnly 等属性）。
+
+    门户可能同时下发多个 cookie（JSESSIONID、SESSION 等），全部保留；
+    只取第一个会丢失会话，导致后续 CAS 登录被拒。
+    """
+    jar: dict[str, str] = {}
+    for name, value in headers:
+        if name.lower() != "set-cookie":
+            continue
+        pair = value.split(";", 1)[0].strip()
+        if "=" not in pair:
+            continue
+        key, val = pair.split("=", 1)
+        key, val = key.strip(), val.strip()
+        if key:
+            jar[key] = val
+    return jar
+
+
+class _CookieJar:
+    """跨请求累积的 cookie 罐：CAS 流程每一步下发的 cookie 都带到后续请求。"""
+
+    def __init__(self) -> None:
+        self._items: dict[str, str] = {}
+
+    def update(self, response) -> None:
+        """从响应中吸收 Set-Cookie（读取失败静默）。"""
+        try:
+            headers = response.getheaders()
+        except Exception:
+            return
+        self._items.update(_parse_set_cookie(headers))
+
+    def header(self) -> str:
+        return "; ".join(f"{k}={v}" for k, v in self._items.items())
+
+    def names(self) -> list[str]:
+        return list(self._items)
+
+    def __bool__(self) -> bool:
+        return bool(self._items)
+
+
+def _headers(jar: _CookieJar | None = None, referer: str | None = None) -> dict[str, str]:
+    """构造请求头：自动带上 cookie 罐里的全部 cookie。"""
+    headers = {"User-Agent": UA, "Connection": "close"}
+    if jar:
+        headers["Cookie"] = jar.header()
+    if referer:
+        headers["Referer"] = referer
+    return headers
+
+
+def _parse_json_body(text: str) -> dict:
+    """把响应体解析成 JSON 对象；非 JSON/非对象返回空 dict。"""
+    import json as _json
+    try:
+        value = _json.loads(text)
+    except (ValueError, TypeError):
+        return {}
+    return value if isinstance(value, dict) else {}
+
+
+def _summarize(value, limit: int = 160) -> str:
+    """把工作流响应数据压成一行日志（敏感字段由 _cas_log 统一脱敏）。"""
+    import json as _json
+    try:
+        text = _json.dumps(value, ensure_ascii=False)
+    except (TypeError, ValueError):
+        text = str(value)
+    return text[:limit]
 
 
 def _build_login_url(host: str, port: int, flow_session_id: str,
@@ -63,27 +132,39 @@ def _build_login_url(host: str, port: int, flow_session_id: str,
     return f"http://{host}:{port}/cas-sso/login?{qs}"
 
 
+def _workflow_step_ok(status: int, body: dict) -> tuple[bool, str]:
+    """判断一个工作流步骤是否成功：HTTP 200 且业务 code 为 200（或缺失）。"""
+    if status != 200:
+        return False, f"HTTP {status}"
+    code = body.get("code")
+    if code not in (200, "200", None):
+        message = body.get("message") or f"code={code}"
+        return False, str(message)
+    return True, ""
+
+
 def _run_workflow(host: str, port: int, sid: str, credentials, adapter: NetworkAdapter | None,
-                  cookie: str, timeout: float) -> bool:
-    """CAS 登录后走锐捷工作流完成准入：getCurrentNode → serviceSelection → serviceLogin → getCurrentNode → userOnline。"""
+                  jar: _CookieJar, timeout: float) -> dict:
+    """CAS 登录后走锐捷工作流完成准入，返回 {ok, message, detail}。
+
+    步骤：getCurrentNode → serviceSelection → serviceLogin → getCurrentNode → userOnline。
+    每一步都校验 HTTP 状态与业务 code；userOnline 若返回 data.online 字段则必须为 True，
+    避免以前"请求发出就算成功"的假成功判定。
+    """
     import json as _json
 
     def post_json(path: str, body: dict):
         conn = BoundHTTPConnection(host, port, adapter=adapter, timeout=timeout)
         payload = _json.dumps(body).encode("utf-8")
-        h = {
-            "User-Agent": "campus-auth/0.1",
-            "Content-Type": "application/json",
-            "Referer": f"http://{host}:{port}/portal/portal-main",
-            "Connection": "close",
-        }
-        if cookie:
-            h["Cookie"] = cookie
-        conn.request("POST", path, body=payload, headers=h)
+        headers = _headers(jar, referer=f"http://{host}:{port}/portal/portal-main")
+        headers["Content-Type"] = "application/json"
+        conn.request("POST", path, body=payload, headers=headers)
         resp = conn.getresponse()
         data = resp.read().decode("utf-8", errors="replace")
+        jar.update(resp)
+        status = resp.status
         conn.close()
-        return resp.status, data
+        return status, data
 
     # 运营商 → 服务名映射（服务名是英文，如 unicom/cmcc/ctcc）
     service = (getattr(credentials, "service", "") or "unicom").strip()
@@ -95,21 +176,39 @@ def _run_workflow(host: str, port: int, sid: str, credentials, adapter: NetworkA
     }
     service = svc_map.get(service, service or "unicom")
 
-    try:
-        st, body = post_json("/eportal/workFlow/getCurrentNode", {"sessionId": sid, "flowKey": "portal_auth"})
-        _cas_log(f"工作流 getCurrentNode -> {st} {body[:200]}")
-        st, body = post_json("/eportal/network/serviceSelection", {"sessionId": sid})
-        _cas_log(f"工作流 serviceSelection -> {st} {body[:200]}")
-        st, body = post_json("/eportal/network/serviceLogin", {"sessionId": sid, "service": service})
-        _cas_log(f"工作流 serviceLogin(service={service}) -> {st} {body[:200]}")
-        st, body = post_json("/eportal/workFlow/getCurrentNode", {"sessionId": sid, "flowKey": "portal_auth"})
-        _cas_log(f"工作流 getCurrentNode2 -> {st} {body[:200]}")
-        st, body = post_json("/eportal/network/userOnline", {"sessionId": sid})
-        _cas_log(f"工作流 userOnline -> {st} {body[:200]}")
-        return True
-    except (OSError, http.client.HTTPException, ValueError) as exc:
-        _cas_log(f"工作流执行失败: {exc}")
-        return False
+    steps = [
+        ("getCurrentNode", "/eportal/workFlow/getCurrentNode",
+         {"sessionId": sid, "flowKey": "portal_auth"}),
+        ("serviceSelection", "/eportal/network/serviceSelection", {"sessionId": sid}),
+        ("serviceLogin", "/eportal/network/serviceLogin", {"sessionId": sid, "service": service}),
+        ("getCurrentNode2", "/eportal/workFlow/getCurrentNode",
+         {"sessionId": sid, "flowKey": "portal_auth"}),
+        ("userOnline", "/eportal/network/userOnline", {"sessionId": sid}),
+    ]
+
+    detail: dict[str, dict] = {}
+    for label, path, body in steps:
+        try:
+            status, text = post_json(path, body)
+        except (OSError, http.client.HTTPException, ValueError) as exc:
+            _cas_log(f"工作流 {label} 请求失败: {exc}")
+            return {"ok": False, "message": f"工作流 {label} 请求失败: {exc}", "detail": detail}
+        parsed = _parse_json_body(text)
+        detail[label] = {"status": status, "code": parsed.get("code"), "data": parsed.get("data")}
+        _cas_log(f"工作流 {label} -> HTTP {status} code={parsed.get('code')!r} "
+                 f"data={_summarize(parsed.get('data'))}")
+        ok, message = _workflow_step_ok(status, parsed)
+        if not ok:
+            return {"ok": False, "message": f"工作流 {label} 失败：{message}", "detail": detail}
+        if label == "userOnline":
+            data_part = parsed.get("data")
+            if isinstance(data_part, dict) and "online" in data_part and data_part.get("online") is not True:
+                return {
+                    "ok": False,
+                    "message": f"工作流 userOnline 未上线（online={data_part.get('online')!r}）",
+                    "detail": detail,
+                }
+    return {"ok": True, "message": "已上线", "detail": detail}
 
 
 def authenticate_cas(profile, credentials, adapter: NetworkAdapter | None,
@@ -120,9 +219,8 @@ def authenticate_cas(profile, credentials, adapter: NetworkAdapter | None,
 
     host = profile.host
     port = profile.port
-    entry_path = profile.entry_path or "/portal/entry/pc/authenticate;flowParams=undefined;from="
-    headers = {"User-Agent": "campus-auth/0.1", "Connection": "close"}
-    cookie = ""
+    jar = _CookieJar()
+    probe_headers = _headers()
 
     # 1) captive 探测：访问外网，网关劫持返回跳转到 /eportal/index.jsp?wlanuserip=...&wlanacname=...
     probe_url = getattr(profile, "redirect_probe_url", None) or "http://www.baidu.com/"
@@ -139,7 +237,7 @@ def authenticate_cas(profile, credentials, adapter: NetworkAdapter | None,
     for target_host, target_path in probe_targets:
         try:
             conn = BoundHTTPConnection(target_host, 80, adapter=adapter, timeout=timeout)
-            conn.request("GET", target_path, headers=headers)
+            conn.request("GET", target_path, headers=probe_headers)
             resp = conn.getresponse()
             body = resp.read().decode("utf-8", errors="replace")
             conn.close()
@@ -173,11 +271,12 @@ def authenticate_cas(profile, credentials, adapter: NetworkAdapter | None,
     index_path = f"/eportal/index.jsp?wlanuserip={wlanuserip}&wlanacname={urllib.parse.quote(wlanacname)}"
     try:
         conn2 = BoundHTTPConnection(host, port, adapter=adapter, timeout=timeout)
-        conn2.request("GET", index_path, headers=headers)
+        conn2.request("GET", index_path, headers=_headers(jar))
         resp2 = conn2.getresponse()
         status2 = resp2.status
         loc2 = resp2.getheader("Location", "")
         body2 = resp2.read().decode("utf-8", errors="replace")
+        jar.update(resp2)
         conn2.close()
         _cas_log(f"CAS /eportal/index.jsp -> HTTP {status2} Location={loc2!r}")
         _cas_log(f"  index正文前500: {body2[:500]!r}")
@@ -203,11 +302,12 @@ def authenticate_cas(profile, credentials, adapter: NetworkAdapter | None,
             _cas_log(f"CAS 跳转[{hop}] {clean_url[:200]!r}")
             try:
                 conn3 = BoundHTTPConnection(host, port, adapter=adapter, timeout=timeout)
-                conn3.request("GET", clean_url, headers=headers)
+                conn3.request("GET", clean_url, headers=_headers(jar))
                 resp3 = conn3.getresponse()
                 s3 = resp3.status
                 loc3 = resp3.getheader("Location", "")
                 b3 = resp3.read().decode("utf-8", errors="replace")
+                jar.update(resp3)
                 conn3.close()
             except (OSError, http.client.HTTPException) as exc:
                 _cas_log(f"CAS 跳转[{hop}] 请求失败: {exc}")
@@ -236,21 +336,19 @@ def authenticate_cas(profile, credentials, adapter: NetworkAdapter | None,
         _cas_log(f"CAS 尝试 /pc/center: {center_url[:180]!r}")
         try:
             conn4 = BoundHTTPConnection(host, port, adapter=adapter, timeout=timeout)
-            conn4.request("GET", center_url, headers=headers)
+            conn4.request("GET", center_url, headers=_headers(jar))
             resp4 = conn4.getresponse()
-            cookie = resp4.getheader("Set-Cookie", "") or ""
-            # 只取 name=value 部分（去掉 Path/HttpOnly 等属性）
-            cookie = cookie.split(";")[0].strip()
+            jar.update(resp4)
             login_html = resp4.read().decode("utf-8", errors="replace")
             conn4.close()
-            _cas_log(f"  /pc/center Set-Cookie: {cookie[:120]!r}")
+            _cas_log(f"  /pc/center 收到 cookie: {jar.names()}")
         except (OSError, http.client.HTTPException) as exc:
             _cas_log(f"  /pc/center 访问失败: {exc}")
 
     croypto = _extract_element(login_html, ID_CROYPTO) or ""
     execution = _extract_element(login_html, ID_EXECUTION) or ""
     _cas_log(f"CAS 参数: flowSessionId={flow_session_id!r} sessionId={session_id!r} customPageId={custom_page_id!r} nasIp={nas_ip!r} userIp={user_ip!r}")
-    _cas_log(f"CAS 提取: croypto={croypto!r} execution前200={execution[:200]!r}(总{len(execution)}字符)")
+    _cas_log(f"CAS 提取: croypto={mask(croypto)} execution长度={len(execution)}")
     if not croypto:
         _cas_log(f"CAS 登录页HTML前500字节: {login_html[:500]!r}")
         return {"ok": False, "message": "未能从认证页提取 croypto 密钥", "detail": {"flowSessionId": flow_session_id}}
@@ -281,16 +379,13 @@ def authenticate_cas(profile, credentials, adapter: NetworkAdapter | None,
     login_url = _build_login_url(host, port, session_id or flow_session_id,
                                  custom_page_id, nas_ip, user_ip)
     _cas_log(f"CAS 登录URL: {login_url[:200]!r}")
-    _cas_log(f"CAS 提交字段: username={credentials.username!r} croypto={croypto!r} password(密文)={enc_password!r} captcha_payload={enc_captcha!r} execution长度={len(execution)}")
-    post_headers = {
-        "User-Agent": "campus-auth/0.1",
-        "Content-Type": "application/x-www-form-urlencoded",
-        "Origin": f"http://{host}:{port}",
-        "Referer": f"http://{host}:{port}/pc/center?flowSessionId={session_id or flow_session_id}&customPageId={custom_page_id}",
-        "Connection": "close",
-    }
-    if cookie:
-        post_headers["Cookie"] = cookie
+    _cas_log(f"CAS 提交字段: username={mask(credentials.username)} croypto={mask(croypto)} "
+             f"password=密文({len(enc_password)}字符) execution长度={len(execution)}")
+    referer = (f"http://{host}:{port}/pc/center?flowSessionId={session_id or flow_session_id}"
+               f"&customPageId={custom_page_id}")
+    post_headers = _headers(jar, referer=referer)
+    post_headers["Content-Type"] = "application/x-www-form-urlencoded"
+    post_headers["Origin"] = f"http://{host}:{port}"
     try:
         conn3 = BoundHTTPConnection(host, port, adapter=adapter, timeout=timeout)
         conn3.request("POST", urllib.parse.urlsplit(login_url).path + "?" + urllib.parse.urlsplit(login_url).query,
@@ -299,6 +394,7 @@ def authenticate_cas(profile, credentials, adapter: NetworkAdapter | None,
         status = resp3.status
         loc = resp3.getheader("Location", "")
         resp_body = resp3.read().decode("utf-8", errors="replace")
+        jar.update(resp3)
         conn3.close()
     except (OSError, http.client.HTTPException) as exc:
         _cas_log(f"CAS 登录请求失败: {exc}")
@@ -310,24 +406,21 @@ def authenticate_cas(profile, credentials, adapter: NetworkAdapter | None,
         if kw.lower() in resp_body.lower():
             idx = resp_body.lower().find(kw.lower())
             _cas_log(f"  响应体含关键词 {kw!r}: ...{resp_body[max(0,idx-40):idx+40]!r}...")
-    _cas_log(f"  登录响应体前1000字节: {resp_body[:1000]!r}")
+    _cas_log(f"  登录响应体前500字节: {resp_body[:500]!r}")
     if status in (301, 302, 303, 307, 308) and ("auth-success" in loc or "ticket=" in loc):
         ticket = _param(loc, "ticket")
-        _cas_log(f"CAS 成功 ticket={ticket!r}")
+        _cas_log(f"CAS 成功 ticket={mask(ticket)}")
         # 访问 auth-success.html（服务端在此验证 ticket 完成身份认证）
         try:
             clean_loc = loc.replace(" ", "%20")
-            succ_headers = {
-                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/155.0.0.0 Safari/537.36",
-                "Referer": f"http://{host}:{port}/pc/center",
-                "Connection": "close",
-            }
-            if cookie:
-                succ_headers["Cookie"] = cookie
+            succ_headers = _headers(jar, referer=f"http://{host}:{port}/pc/center")
+            succ_headers["User-Agent"] = ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+                                          "(KHTML, like Gecko) Chrome/155.0.0.0 Safari/537.36")
             conn5 = BoundHTTPConnection(host, port, adapter=adapter, timeout=timeout)
             conn5.request("GET", clean_loc, headers=succ_headers)
             resp5 = conn5.getresponse()
             resp5.read()
+            jar.update(resp5)
             conn5.close()
             _cas_log(f"auth-success 响应 HTTP {resp5.status}")
         except (OSError, http.client.HTTPException) as exc:
@@ -335,11 +428,18 @@ def authenticate_cas(profile, credentials, adapter: NetworkAdapter | None,
 
         # CAS 登录成功后，走锐捷工作流完成准入（userOnline 上线）
         sid = session_id or flow_session_id
+        detail = {"location": loc, "ticket": mask(ticket)}
         if sid:
-            flow_ok = _run_workflow(host, port, sid, credentials, adapter, cookie, timeout)
-            if flow_ok:
-                return {"ok": True, "message": "认证成功（已上线）", "detail": {"location": loc, "ticket": ticket}}
-        return {"ok": True, "message": "CAS 认证成功（上线状态待确认）", "detail": {"location": loc, "ticket": ticket}}
+            flow = _run_workflow(host, port, sid, credentials, adapter, jar, timeout)
+            if flow.get("ok"):
+                return {"ok": True, "message": "认证成功（已上线）",
+                        "detail": {**detail, "online_confirmed": True}}
+            _cas_log(f"CAS 登录成功但工作流上线失败: {flow.get('message')}")
+            return {"ok": True, "message": "CAS 认证成功（上线状态待确认）",
+                    "detail": {**detail, "online_confirmed": False,
+                               "workflow_error": flow.get("message", "")}}
+        return {"ok": True, "message": "CAS 认证成功（上线状态待确认）",
+                "detail": {**detail, "online_confirmed": False}}
     return {"ok": False, "message": f"CAS 登录失败 (HTTP {status})", "detail": {"location": loc, "body": resp_body[:500]}}
 
 

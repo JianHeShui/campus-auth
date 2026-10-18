@@ -8,17 +8,15 @@ from __future__ import annotations
 import http.client
 import json
 import re
-import time
 import urllib.parse
 from dataclasses import dataclass, field
-from pathlib import Path
 
+from .logutil import write_scrubbed_log
 from .network import BoundHTTPConnection, NetworkAdapter, https_reachable
 from .portal import PortalProfile
 from .state import AuthState
 
-# 认证调试日志：记录每次认证请求/响应，用于排查认证链路（账号密码已脱敏）
-_AUTH_DEBUG_LOG = Path.home() / ".campus-auth" / "auth-debug.log"
+# 认证调试日志：记录每次认证请求/响应，用于排查认证链路（统一脱敏 + 轮转）
 _SENSITIVE_KEYS = ("username", "userName", "password", "userPwd", "userpwd", "passwd")
 
 
@@ -40,13 +38,8 @@ def _redact_body(body) -> dict:
 
 
 def _auth_log(msg: str) -> None:
-    """追加写认证调试日志（失败静默，不影响认证）。"""
-    try:
-        _AUTH_DEBUG_LOG.parent.mkdir(parents=True, exist_ok=True)
-        with open(_AUTH_DEBUG_LOG, "a", encoding="utf-8") as f:
-            f.write(f"[{time.strftime('%Y-%m-%d %H:%M:%S')}] {msg}\n")
-    except OSError:
-        pass
+    """写认证调试日志（logutil 负责字段脱敏与轮转，失败静默）。"""
+    write_scrubbed_log(msg)
 
 
 class AuthError(RuntimeError):
@@ -340,10 +333,22 @@ class Client:
         from .cas import authenticate_cas
         result = authenticate_cas(self.profile, credentials, self.adapter, self.timeout)
         if result.get("ok"):
+            detail = result.get("detail", {})
+            online_confirmed = True
+            workflow_error = ""
+            if isinstance(detail, dict):
+                online_confirmed = bool(detail.get("online_confirmed", True))
+                workflow_error = str(detail.get("workflow_error", ""))
             # CAS 登录成功后复核联网状态
             if self._internet_ok():
-                return AuthResult(AuthState.ONLINE, "连网成功")
-            return AuthResult(AuthState.PENDING, "CAS 认证已提交，在线状态待确认", detail=result.get("detail", {}))
+                return AuthResult(AuthState.ONLINE, "连网成功", detail=detail)
+            if online_confirmed:
+                return AuthResult(AuthState.PENDING, "CAS 认证已提交，在线状态待确认", detail=detail)
+            # CAS 身份认证成功，但工作流上线步骤失败：按待确认重试，且给出真实原因
+            message = "CAS 认证成功，但工作流上线未确认"
+            if workflow_error:
+                message = f"{message}：{workflow_error}"
+            return AuthResult(AuthState.PENDING, message, detail=detail)
         msg = result.get("message", "CAS 认证失败")
         detail = result.get("detail", {})
         body = detail.get("body", "") if isinstance(detail, dict) else ""
