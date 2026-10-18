@@ -17,6 +17,20 @@ from campus_auth.state import AuthState
 _TMP_ROOT = Path(tempfile.mkdtemp(prefix="campus-auth-test-"))
 atexit.register(shutil.rmtree, _TMP_ROOT, True)
 
+# 日志隔离：认证链路会写 ~/.campus-auth/auth-debug.log，测试统一重定向到临时目录
+_LOG_PATH_PATCH = None
+
+
+def setUpModule():
+    global _LOG_PATH_PATCH
+    _LOG_PATH_PATCH = patch("campus_auth.logutil.LOG_PATH", _TMP_ROOT / "auth-debug.log")
+    _LOG_PATH_PATCH.start()
+
+
+def tearDownModule():
+    if _LOG_PATH_PATCH is not None:
+        _LOG_PATH_PATCH.stop()
+
 
 class SimplePortalHandler(BaseHTTPRequestHandler):
     protocol_version = "HTTP/1.1"

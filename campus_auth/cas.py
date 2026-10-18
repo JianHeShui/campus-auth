@@ -14,6 +14,7 @@ import re
 import time
 import urllib.parse
 
+from . import __version__
 from .crypto import aes_ecb_pkcs7_encrypt_b64, has_crypto
 from .logutil import mask, scrub, write_log
 from .network import BoundHTTPConnection, NetworkAdapter
@@ -22,7 +23,7 @@ from .network import BoundHTTPConnection, NetworkAdapter
 ID_CROYPTO = "login-croypto"        # AES 密钥（base64）
 ID_EXECUTION = "login-page-flowkey"  # CAS flow execution key
 
-UA = "campus-auth/0.1"
+UA = f"campus-auth/{__version__}"
 
 
 def _cas_log(msg: str) -> None:
@@ -116,7 +117,7 @@ def _summarize(value, limit: int = 160) -> str:
     return text[:limit]
 
 
-def _build_login_url(host: str, port: int, flow_session_id: str,
+def _build_login_url(scheme: str, host: str, port: int, flow_session_id: str,
                      custom_page_id: str, nas_ip: str, user_ip: str) -> str:
     qs = urllib.parse.urlencode({
         "flowSessionId": flow_session_id,
@@ -129,7 +130,7 @@ def _build_login_url(host: str, port: int, flow_session_id: str,
         "userIp": user_ip,
         "accept-language": "zh-CN",
     })
-    return f"http://{host}:{port}/cas-sso/login?{qs}"
+    return f"{scheme}://{host}:{port}/cas-sso/login?{qs}"
 
 
 def _workflow_step_ok(status: int, body: dict) -> tuple[bool, str]:
@@ -143,7 +144,7 @@ def _workflow_step_ok(status: int, body: dict) -> tuple[bool, str]:
     return True, ""
 
 
-def _run_workflow(host: str, port: int, sid: str, credentials, adapter: NetworkAdapter | None,
+def _run_workflow(scheme: str, host: str, port: int, sid: str, credentials, adapter: NetworkAdapter | None,
                   jar: _CookieJar, timeout: float) -> dict:
     """CAS 登录后走锐捷工作流完成准入，返回 {ok, message, detail}。
 
@@ -156,7 +157,7 @@ def _run_workflow(host: str, port: int, sid: str, credentials, adapter: NetworkA
     def post_json(path: str, body: dict):
         conn = BoundHTTPConnection(host, port, adapter=adapter, timeout=timeout)
         payload = _json.dumps(body).encode("utf-8")
-        headers = _headers(jar, referer=f"http://{host}:{port}/portal/portal-main")
+        headers = _headers(jar, referer=f"{scheme}://{host}:{port}/portal/portal-main")
         headers["Content-Type"] = "application/json"
         conn.request("POST", path, body=payload, headers=headers)
         resp = conn.getresponse()
@@ -219,6 +220,7 @@ def authenticate_cas(profile, credentials, adapter: NetworkAdapter | None,
 
     host = profile.host
     port = profile.port
+    scheme = getattr(profile, "scheme", "http") or "http"  # 支持 HTTPS CAS 门户
     jar = _CookieJar()
     probe_headers = _headers()
 
@@ -376,16 +378,16 @@ def authenticate_cas(profile, credentials, adapter: NetworkAdapter | None,
         "captcha_payload": enc_captcha,
     }
     payload = urllib.parse.urlencode(body_fields).encode("utf-8")
-    login_url = _build_login_url(host, port, session_id or flow_session_id,
+    login_url = _build_login_url(scheme, host, port, session_id or flow_session_id,
                                  custom_page_id, nas_ip, user_ip)
     _cas_log(f"CAS 登录URL: {login_url[:200]!r}")
     _cas_log(f"CAS 提交字段: username={mask(credentials.username)} croypto={mask(croypto)} "
              f"password=密文({len(enc_password)}字符) execution长度={len(execution)}")
-    referer = (f"http://{host}:{port}/pc/center?flowSessionId={session_id or flow_session_id}"
+    referer = (f"{scheme}://{host}:{port}/pc/center?flowSessionId={session_id or flow_session_id}"
                f"&customPageId={custom_page_id}")
     post_headers = _headers(jar, referer=referer)
     post_headers["Content-Type"] = "application/x-www-form-urlencoded"
-    post_headers["Origin"] = f"http://{host}:{port}"
+    post_headers["Origin"] = f"{scheme}://{host}:{port}"
     try:
         conn3 = BoundHTTPConnection(host, port, adapter=adapter, timeout=timeout)
         conn3.request("POST", urllib.parse.urlsplit(login_url).path + "?" + urllib.parse.urlsplit(login_url).query,
@@ -413,7 +415,7 @@ def authenticate_cas(profile, credentials, adapter: NetworkAdapter | None,
         # 访问 auth-success.html（服务端在此验证 ticket 完成身份认证）
         try:
             clean_loc = loc.replace(" ", "%20")
-            succ_headers = _headers(jar, referer=f"http://{host}:{port}/pc/center")
+            succ_headers = _headers(jar, referer=f"{scheme}://{host}:{port}/pc/center")
             succ_headers["User-Agent"] = ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
                                           "(KHTML, like Gecko) Chrome/155.0.0.0 Safari/537.36")
             conn5 = BoundHTTPConnection(host, port, adapter=adapter, timeout=timeout)
@@ -430,7 +432,7 @@ def authenticate_cas(profile, credentials, adapter: NetworkAdapter | None,
         sid = session_id or flow_session_id
         detail = {"location": loc, "ticket": mask(ticket)}
         if sid:
-            flow = _run_workflow(host, port, sid, credentials, adapter, jar, timeout)
+            flow = _run_workflow(scheme, host, port, sid, credentials, adapter, jar, timeout)
             if flow.get("ok"):
                 return {"ok": True, "message": "认证成功（已上线）",
                         "detail": {**detail, "online_confirmed": True}}

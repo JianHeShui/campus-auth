@@ -1,4 +1,5 @@
 {
+  "_comment": "campus-auth 门户画像示例。复制为 portal.json 后按实际门户修改；host 与字段名均为中性示例（10.0.0.1），不代表任何真实学校。login 段是阶段 1 厂商引擎的预留骨架：当前版本只解析、不参与认证分派，示例取值参考 Dr.COM 风格，实际以现场取证为准。",
   "auth_mode": "workflow",
   "portal": {
     "host": "10.0.0.1",
@@ -34,6 +35,26 @@
     "username_field": "username",
     "password_field": "password",
     "extra_fields": {}
+  },
+  "login": {
+    "_comment": "厂商登录骨架示例。path=登录接口；method=GET/POST；callback=JSONP 回调名（仅 JSONP 门户需要）；user_field/pass_field=账号密码字段名；password_transform=密码变换，可选 plain/base64/md5/hmac_md5/rsa/xxtea；service_field=服务下拉字段名；service_suffix=服务名→账号后缀映射；extra_params=附加固定参数；ip_field=需要携带本机 IP 的字段名；success/failure=响应特征串与 JSONP 判定。",
+    "path": "/eportal/portal/login",
+    "method": "GET",
+    "callback": "dr1003",
+    "user_field": "user_account",
+    "pass_field": "user_password",
+    "password_transform": "plain",
+    "service_field": "",
+    "service_suffix": {
+      "中国移动": "@cmcc",
+      "中国联通": "@unicom",
+      "中国电信": "@telecom",
+      "校园网": ""
+    },
+    "extra_params": { "login_method": "1", "terminal_type": "1" },
+    "ip_field": "wlan_user_ip",
+    "success": { "contains": ["Portal协议认证成功", "\"result\":1"], "jsonp": true },
+    "failure": { "contains": ["AC认证失败", "密码错误"] }
   },
   "online_check": {
     "path_field": "data.portalOnlineUserInfo.result",

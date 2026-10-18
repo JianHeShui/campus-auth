@@ -1,0 +1,7 @@
+# campus-auth 构建依赖（钉死版本，保证发布会话可复现）
+# 安装：python -m pip install -r requirements-build.txt
+# 版本与 v0.3.0 实际构建环境一致（2026-10-18，Windows / Python 3.14.7）
+#   pyinstaller   —— 打包目录版（onedir）与单文件版（onefile）
+#   pycryptodome  —— 华三 CAS 模式的 AES-128-ECB 加密；spec 中 collect_all("Crypto") 收集其 .pyd
+pyinstaller==6.22.3
+pycryptodome==3.24.1

@@ -18,6 +18,21 @@ from campus_auth.state import AuthState
 _TMP_ROOT = Path(tempfile.mkdtemp(prefix="campus-auth-test-"))
 atexit.register(shutil.rmtree, _TMP_ROOT, True)
 
+# 日志隔离：认证链路会写 ~/.campus-auth/auth-debug.log，测试统一重定向到临时目录，
+# 避免每次跑测试污染开发者真实日志、也避免依赖本机状态。
+_LOG_PATH_PATCH = None
+
+
+def setUpModule():
+    global _LOG_PATH_PATCH
+    _LOG_PATH_PATCH = patch("campus_auth.logutil.LOG_PATH", _TMP_ROOT / "auth-debug.log")
+    _LOG_PATH_PATCH.start()
+
+
+def tearDownModule():
+    if _LOG_PATH_PATCH is not None:
+        _LOG_PATH_PATCH.stop()
+
 
 class FakePortalHandler(BaseHTTPRequestHandler):
     """复刻认证工作流契约（本地模拟门户，不触网）。"""
@@ -228,13 +243,13 @@ class CasDispatchTests(unittest.TestCase):
 
 class ClientHelpersTests(unittest.TestCase):
     def test_ok_accepts_string_code(self):
-        client = Client(load_profile(None), adapter=None)
+        client = Client(load_profile(_TMP_ROOT / "no-such-profile.json"), adapter=None)
         self.assertTrue(client._ok({"code": "200"}))
         self.assertTrue(client._ok({}))
         self.assertFalse(client._ok({"code": 400}))
 
     def test_is_online_delegates_to_internet_probe(self):
-        client = Client(load_profile(None), adapter=None)
+        client = Client(load_profile(_TMP_ROOT / "no-such-profile.json"), adapter=None)
         with patch.object(client, "_internet_ok", return_value=True) as inner:
             self.assertTrue(client.is_online())
         inner.assert_called_once()

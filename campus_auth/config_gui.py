@@ -10,7 +10,8 @@ from pathlib import Path
 from tkinter import filedialog, messagebox, ttk
 
 from .portal import DEFAULT_PROFILE, deep_merge
-from .theme import C as _TC, S as _TS
+from .theme import C as _TC
+from .theme import S as _TS
 
 # 认证引擎模式
 MODES = ("workflow", "cas", "simple")
@@ -202,6 +203,50 @@ def _parse_address(text: str) -> tuple[str, int, str]:
     port = parts.port or (443 if parts.scheme == "https" else 80)
     scheme = parts.scheme or "http"
     return host, port, scheme
+
+
+def _format_address(data: dict) -> str:
+    """把画像里的 portal.host/port/scheme 还原成地址框文本（_apply_address 的逆运算）。
+
+    非默认端口才显示 :port，保证「打开 → 保存」往返不丢协议与端口。
+    """
+    portal = data.get("portal") if isinstance(data, dict) else None
+    if not isinstance(portal, dict):
+        return ""
+    host = str(portal.get("host", "") or "").strip()
+    if not host:
+        return ""
+    scheme = str(portal.get("scheme", "http") or "http").strip().lower()
+    if scheme not in ("http", "https"):
+        scheme = "http"
+    try:
+        port = int(portal.get("port", 0))
+    except (TypeError, ValueError):
+        port = 0
+    default_port = 443 if scheme == "https" else 80
+    if port in (0, default_port):
+        return f"{scheme}://{host}"
+    return f"{scheme}://{host}:{port}"
+
+
+def _apply_address(data: dict, address: str) -> None:
+    """把地址框文本解析并写入 portal.host/port/scheme（地址框是唯一数据源）。
+
+    地址为空或无法解析时抛 ValueError（中文提示），避免把旧值静默写回。
+    """
+    addr = (address or "").strip()
+    if not addr:
+        raise ValueError("门户地址不能为空，请填写形如 10.0.0.1 或 http://host:8080 的地址")
+    try:
+        host, port, scheme = _parse_address(addr)
+    except ValueError as exc:
+        raise ValueError(f"门户地址无法解析：{exc}") from exc
+    if not host:
+        raise ValueError("门户地址无法解析，请填写形如 10.0.0.1 或 http://host:8080 的地址")
+    portal = data.setdefault("portal", {})
+    portal["host"] = host
+    portal["port"] = port
+    portal["scheme"] = scheme
 
 
 # 预设门户模板：傻瓜式用户只需选类型 + 填地址，其余字段自动填好。
@@ -558,7 +603,7 @@ class ConfigWindow:
 
         # 门户地址（独占一行）
         ttk.Label(card, text="门户地址", style="Card.TLabel").grid(row=3, column=0, sticky="w", padx=(0, 10), pady=4)
-        self.address_var = tk.StringVar(value=DEFAULT_PROFILE["portal"]["host"])
+        self.address_var = tk.StringVar(value=_format_address(DEFAULT_PROFILE))
         address_entry = ttk.Entry(card, textvariable=self.address_var, width=34)
         address_entry.grid(row=3, column=1, columnspan=2, sticky="we", pady=4)
         _bind_context_menu(address_entry)
@@ -707,8 +752,9 @@ class ConfigWindow:
         """断网时从网关劫持中提取门户地址（后台执行，避免多目标探测时界面卡死）。"""
         import queue
         import threading
+
         from .network import detect_portal_host
-        q: "queue.Queue" = queue.Queue()
+        q: queue.Queue = queue.Queue()
         self._set_fetch_busy(True)
 
         def worker() -> None:
@@ -756,8 +802,9 @@ class ConfigWindow:
         """后台探测门户类型；完成后回到 Tk 主线程调用 on_done(result)。"""
         import queue
         import threading
+
         from .detect import probe_portal
-        q: "queue.Queue" = queue.Queue()
+        q: queue.Queue = queue.Queue()
         self._set_detect_busy(True)
 
         def worker() -> None:
@@ -873,8 +920,9 @@ class ConfigWindow:
         mode_box = ttk.Combobox(parent, textvariable=self.mode_var, values=MODES, state="readonly", width=18)
         mode_box.grid(row=row, column=1, sticky="w", pady=4)
         row += 1
-        row = self._section(parent, "门户地址", "", row)
-        self._form(parent, ["portal.host", "portal.port", "portal.scheme", "portal.entry_path"], row)
+        row = self._section(parent, "门户地址",
+                            "主机/端口/协议以「快速开始」的门户地址框为准；此处仅高级入口路径", row)
+        self._form(parent, ["portal.entry_path"], row)
 
     def _build_workflow(self, parent: ttk.Frame) -> None:
         row = self._section(parent, "工作流模式", "锐捷 SAM+ 等：取节点 → 提交账号密码 → 选服务 → 复核在线", 0)
@@ -1002,11 +1050,26 @@ class ConfigWindow:
                 return
 
         # 3) 启动（或重启）独立保护进程：若已在保护中，先停止再启动，让新配置生效
-        from .daemon import is_running, start, stop
+        from .daemon import ALREADY_RUNNING, STARTED, is_running, start_status, stop
         was_running = is_running()
         if was_running:
-            stop()
-        if not start():
+            stopped = stop()
+            # stop() 返回 False 时可能只是"恰好已经退出"，再确认一次；仍在运行则必须报错，
+            # 否则会把"旧进程没停掉"误报成"新配置已生效"（假重启）。
+            if not stopped and is_running():
+                messagebox.showerror(
+                    "无法停止旧保护进程",
+                    "检测到后台保护进程仍在运行，但无法停止它（缺少 watch.pid，可能是旧版本残留）。\n\n"
+                    "请打开任务管理器，结束所有 campus-auth.exe 后重试。\n"
+                    "本次新配置尚未生效。")
+                return
+        status = start_status()
+        if status == ALREADY_RUNNING:
+            messagebox.showerror(
+                "启动失败",
+                "检测到另一个保护进程已抢先启动，请稍后重试。")
+            return
+        if status != STARTED:
             messagebox.showerror(
                 "启动失败",
                 "无法启动后台保护进程。\n\n请确认程序目录完整，或改用托盘菜单「开始保护」重试。")
@@ -1102,15 +1165,9 @@ class ConfigWindow:
             else:
                 _set(data, key, value)
         data["auth_mode"] = self.mode_var.get()
-        # 门户地址以快速开始区的输入框为准（保证输入框与预览一致）
+        # 门户地址以快速开始区的输入框为准（单一数据源，保证输入框与保存结果一致）
         if self.address_var is not None:
-            addr = self.address_var.get().strip()
-            if addr:
-                host, port, scheme = _parse_address(addr)
-                if host:
-                    data["portal"]["host"] = host
-                    data["portal"]["port"] = port
-                    data["portal"]["scheme"] = scheme
+            _apply_address(data, self.address_var.get())
         hosts = [h.strip() for h in data["connectivity"]["probe_hosts"].split(",") if h.strip()] \
             if isinstance(data["connectivity"].get("probe_hosts"), str) else data["connectivity"]["probe_hosts"]
         data["connectivity"]["probe_hosts"] = hosts or ["www.baidu.com", "www.qq.com"]
@@ -1141,9 +1198,9 @@ class ConfigWindow:
         """把 dict 填进表单。"""
         auth = data.get("auth_mode", "workflow")
         self.mode_var.set(auth)
-        # 同步门户地址输入框（快速开始区独立于 vars，否则会与预览不一致）
+        # 门户地址框是唯一数据源：显示完整地址（含协议与非默认端口），保证往返不丢配置
         if self.address_var is not None:
-            self.address_var.set(str(data.get("portal", {}).get("host", "")))
+            self.address_var.set(_format_address(data))
         # 根据 auth_mode 同步模板下拉框，避免后续「一键生成」把模式覆盖回默认
         if self.template_var is not None:
             if auth == "cas":

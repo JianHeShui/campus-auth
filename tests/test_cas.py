@@ -3,6 +3,7 @@ import unittest
 from unittest.mock import MagicMock
 
 from campus_auth.cas import (
+    _build_login_url,
     _CookieJar,
     _extract_element,
     _param,
@@ -10,6 +11,20 @@ from campus_auth.cas import (
     _summarize,
     _workflow_step_ok,
 )
+
+
+class BuildLoginUrlTests(unittest.TestCase):
+    """HTTPS CAS 门户必须按画像 scheme 构造登录 URL（不能写死 http）。"""
+
+    def test_http_scheme(self):
+        url = _build_login_url("http", "10.0.0.1", 80, "fs", "cp", "nas", "uip")
+        self.assertTrue(url.startswith("http://10.0.0.1:80/cas-sso/login?"))
+        self.assertIn("flowSessionId=fs", url)
+
+    def test_https_scheme(self):
+        url = _build_login_url("https", "portal.x.edu.cn", 8443, "fs", "cp", "nas", "uip")
+        self.assertTrue(url.startswith("https://portal.x.edu.cn:8443/cas-sso/login?"))
+        self.assertIn("timer=", url)
 
 
 class ExtractElementTests(unittest.TestCase):

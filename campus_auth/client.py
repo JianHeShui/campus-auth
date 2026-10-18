@@ -11,10 +11,14 @@ import re
 import urllib.parse
 from dataclasses import dataclass, field
 
+from . import __version__
 from .logutil import write_scrubbed_log
 from .network import BoundHTTPConnection, NetworkAdapter, https_reachable
 from .portal import PortalProfile
 from .state import AuthState
+
+# 统一 User-Agent（版本号跟随 __version__）
+UA = f"campus-auth/{__version__}"
 
 # 认证调试日志：记录每次认证请求/响应，用于排查认证链路（统一脱敏 + 轮转）
 _SENSITIVE_KEYS = ("username", "userName", "password", "userPwd", "userpwd", "passwd")
@@ -126,7 +130,7 @@ class Client:
         payload = json.dumps(body).encode("utf-8") if body is not None else None
         conn = BoundHTTPConnection(host, port, adapter=self.adapter, timeout=timeout)
         headers = {
-            "User-Agent": "campus-auth/0.1",
+            "User-Agent": UA,
             "Accept": "application/json, text/plain, */*",
             "Origin": f"{self.profile.scheme}://{host}:{port}",
             "Referer": f"{self.profile.scheme}://{host}:{port}/portal/",
@@ -188,7 +192,7 @@ class Client:
                     host, port, timeout=self.timeout, context=ssl.create_default_context())
             else:
                 conn = BoundHTTPConnection(host, port, adapter=self.adapter, timeout=self.timeout)
-            conn.request("GET", path, headers={"User-Agent": "campus-auth/0.1", "Connection": "close"})
+            conn.request("GET", path, headers={"User-Agent": UA, "Connection": "close"})
             response = conn.getresponse()
             status = response.status
             location = response.getheader("Location", "")

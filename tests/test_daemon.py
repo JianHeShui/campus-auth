@@ -58,6 +58,47 @@ class MutexDetectionTests(unittest.TestCase):
             self.assertFalse(daemon.is_running())
 
 
+class StartStatusTests(unittest.TestCase):
+    """P0 回归：启动必须能区分「已在运行 / 本次启动 / 失败」，供 GUI 正确提示。"""
+
+    def test_already_running_returns_already_running(self):
+        with patch.object(daemon, "is_running", return_value=True):
+            self.assertEqual(daemon.start_status(), daemon.ALREADY_RUNNING)
+
+    def test_non_windows_returns_failed(self):
+        with patch.object(daemon, "is_running", return_value=False), \
+             patch.object(daemon, "_is_windows", return_value=False):
+            self.assertEqual(daemon.start_status(), daemon.FAILED)
+
+    def test_popen_error_returns_failed(self):
+        with patch.object(daemon, "is_running", return_value=False), \
+             patch.object(daemon, "_is_windows", return_value=True), \
+             patch.object(daemon.subprocess, "Popen", side_effect=OSError("boom")):
+            self.assertEqual(daemon.start_status(), daemon.FAILED)
+
+    def test_mutex_appearing_returns_started(self):
+        calls = {"n": 0}
+
+        def fake_running():
+            calls["n"] += 1
+            return calls["n"] >= 2  # 第一次 False（启动前），之后 True（进程已拿到互斥体）
+
+        with patch.object(daemon, "is_running", side_effect=fake_running), \
+             patch.object(daemon, "_is_windows", return_value=True), \
+             patch.object(daemon.subprocess, "Popen") as popen:
+            self.assertEqual(daemon.start_status(wait=0.3), daemon.STARTED)
+        popen.assert_called_once()
+
+    def test_start_wrapper_true_for_running_and_started(self):
+        with patch.object(daemon, "is_running", return_value=True):
+            self.assertTrue(daemon.start())
+        with patch.object(daemon, "is_running", return_value=False), \
+             patch.object(daemon, "_is_windows", return_value=True), \
+             patch.object(daemon.subprocess, "Popen"), \
+             patch.object(daemon, "start_status", return_value=daemon.STARTED):
+            self.assertTrue(daemon.start())
+
+
 class StopTests(unittest.TestCase):
     def test_stop_when_not_running(self):
         with patch.object(daemon, "is_running", return_value=False), \

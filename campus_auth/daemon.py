@@ -90,15 +90,23 @@ def _python_command(*args: str) -> list[str]:
     return [sys.executable, "-m", "campus_auth", *args]
 
 
-def start(*extra_args: str, wait: float = 3.0) -> bool:
-    """启动独立守护进程；已在运行则直接返回 True。
+# start_status() 的返回值：区分"已在运行 / 本次新启动 / 失败"，
+# 供 GUI 与托盘正确提示，避免把"旧进程没停掉"误报成"新配置已生效"。
+ALREADY_RUNNING = "already_running"
+STARTED = "started"
+FAILED = "failed"
 
-    返回 True 表示守护进程已就绪（互斥体已被占用）。
+
+def start_status(*extra_args: str, wait: float = 3.0) -> str:
+    """启动独立守护进程并返回三态状态（ALREADY_RUNNING / STARTED / FAILED）。
+
+    返回 STARTED 表示互斥体已由新拉起的进程持有；FAILED 表示启动失败
+    （非 Windows、Popen 异常或等待超时仍未拿到互斥体）。
     """
     if is_running():
-        return True
+        return ALREADY_RUNNING
     if not _is_windows():
-        return False
+        return FAILED
     try:
         subprocess.Popen(
             _python_command("watch", *extra_args),
@@ -106,14 +114,22 @@ def start(*extra_args: str, wait: float = 3.0) -> bool:
             creationflags=getattr(subprocess, "CREATE_NO_WINDOW", _CREATE_NO_WINDOW),
         )
     except OSError:
-        return False
+        return FAILED
     # 等待子进程拿到单实例互斥体（启动失败时也不会无限等）
     deadline = time.monotonic() + max(0.2, wait)
     while time.monotonic() < deadline:
         if is_running():
-            return True
+            return STARTED
         time.sleep(0.1)
-    return is_running()
+    return STARTED if is_running() else FAILED
+
+
+def start(*extra_args: str, wait: float = 3.0) -> bool:
+    """启动独立守护进程；已在运行则直接返回 True（兼容旧调用）。
+
+    新代码请用 start_status() 区分三种结果，以便给出准确提示。
+    """
+    return start_status(*extra_args, wait=wait) != FAILED
 
 
 def stop(wait: float = 3.0) -> bool:

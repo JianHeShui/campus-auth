@@ -20,10 +20,14 @@ import ssl
 import struct
 import sys
 import urllib.parse
+from collections.abc import Iterator, Sequence
 from dataclasses import dataclass
-from typing import Iterator, Sequence
 
+from . import __version__
 from .logutil import write_scrubbed_log
+
+# 统一 User-Agent（版本号跟随 campus_auth.__version__，避免多文件各自漂移）
+UA = f"campus-auth/{__version__}"
 
 # Windows 上"出站接口"这一 socket 选项的常量。较新的 Python 已内置
 # socket.IP_UNICAST_IF，旧版本没有，回退到其标准值 31。
@@ -273,14 +277,14 @@ def internet_ok_by_ip(adapter: NetworkAdapter | None = None, timeout: float = 3.
     """
     # 1) NCSI 检测点 IP 直连 + 内容校验（劫持页正文不匹配，天然区分）
     for ip in _NCSI_IPS:
-        if _ncsi_probe(ip, timeout, use_host_header=True):
+        if _ncsi_probe(ip, timeout, use_host_header=True, adapter=adapter):
             return True
 
     # 2) 回退：公网 IP 的 HTTP 响应是否被网关劫持
     for ip in PUBLIC_PROBE_IPS:
         try:
             conn = BoundHTTPConnection(ip, 80, adapter=adapter, timeout=timeout)
-            conn.request("GET", "/", headers={"User-Agent": "campus-auth/0.1", "Connection": "close"})
+            conn.request("GET", "/", headers={"User-Agent": UA, "Connection": "close"})
             resp = conn.getresponse()
             body = resp.read().decode("utf-8", errors="replace")
             conn.close()
@@ -300,10 +304,14 @@ _NCSI_EXPECT = "Microsoft Connect Test"
 _NCSI_IPS = ("13.107.4.50", "13.107.246.40", "204.79.197.200")
 
 
-def _ncsi_probe(host: str, timeout: float, use_host_header: bool = False) -> bool:
-    """访问一次 NCSI 检测点并校验响应内容。"""
+def _ncsi_probe(host: str, timeout: float, use_host_header: bool = False,
+                adapter: NetworkAdapter | None = None) -> bool:
+    """访问一次 NCSI 检测点并校验响应内容。
+
+    走 BoundHTTPConnection 以便多网卡时绑定到配置的网卡（避免走错网卡误判）。
+    """
     try:
-        conn = http.client.HTTPConnection(host, 80, timeout=timeout)
+        conn = BoundHTTPConnection(host, 80, adapter=adapter, timeout=timeout)
         headers = {"Host": _NCSI_HOST} if use_host_header else {}
         conn.request("GET", "/connecttest.txt", headers=headers)
         resp = conn.getresponse()
@@ -314,7 +322,8 @@ def _ncsi_probe(host: str, timeout: float, use_host_header: bool = False) -> boo
         return False
 
 
-def trigger_windows_ncsi_refresh(timeout: float = 5.0) -> None:
+def trigger_windows_ncsi_refresh(timeout: float = 5.0,
+                                 adapter: NetworkAdapter | None = None) -> None:
     """认证成功后主动触发 Windows NCSI 检测，帮助刷新网络状态指示器。
 
     校园网 captive portal 会劫持微软的连通性检测请求，导致 Windows 任务栏
@@ -337,10 +346,10 @@ def trigger_windows_ncsi_refresh(timeout: float = 5.0) -> None:
     # 整体再包一层异常保护：本函数承诺「失败静默，不影响认证主流程」，
     # 即使探测环节抛出未预期异常也不能打断 watch 守护循环。
     try:
-        if _ncsi_probe(_NCSI_HOST, timeout):
+        if _ncsi_probe(_NCSI_HOST, timeout, adapter=adapter):
             return
         for ip in _NCSI_IPS:
-            if _ncsi_probe(ip, timeout, use_host_header=True):
+            if _ncsi_probe(ip, timeout, use_host_header=True, adapter=adapter):
                 return
     except Exception:
         pass
@@ -415,7 +424,7 @@ def detect_portal_host(probe_url: str = "http://www.baidu.com/",
     targets += [(ip, ip, 80, "/", False) for ip in _CAPTIVE_PROBE_IPS]
 
     evidence: list[str] = []
-    headers = {"User-Agent": "campus-auth/0.1", "Connection": "close"}
+    headers = {"User-Agent": UA, "Connection": "close"}
     for label, host, port, path, use_https in targets:
         try:
             if use_https:

@@ -50,6 +50,27 @@ DEFAULT_PROFILE: dict[str, Any] = {
         "password_field": "password",
         "extra_fields": {},
     },
+    # 厂商登录骨架（阶段 0 只做画像结构，供阶段 1 的厂商引擎使用）。
+    # 默认值保持中性：path 为空表示"未配置"，password_transform=plain 表示不加密。
+    # 字段含义：path 登录接口路径；method 请求方法；callback JSONP 回调名；
+    # user_field/pass_field 账号密码字段名；password_transform 密码变换
+    # （plain/base64/md5/hmac_md5/rsa/xxtea）；service_field 服务下拉字段名；
+    # service_suffix 服务名→账号后缀映射；extra_params 附加固定参数；
+    # ip_field 需要携带本机 IP 的字段名；success/failure 响应特征串与 JSONP 判定。
+    "login": {
+        "path": "",
+        "method": "POST",
+        "callback": "",
+        "user_field": "username",
+        "pass_field": "password",
+        "password_transform": "plain",
+        "service_field": "",
+        "service_suffix": {},
+        "extra_params": {},
+        "ip_field": "",
+        "success": {"contains": [], "jsonp": False},
+        "failure": {"contains": []},
+    },
     "online_check": {"path_field": "data.portalOnlineUserInfo.result", "success_value": "success"},
     "error_markers": {
         "auth_fail": ["认证失败", "auth.fail"],
@@ -94,6 +115,16 @@ class PortalProfile:
         "login_path": "", "method": "POST",
         "username_field": "username", "password_field": "password",
         "extra_fields": {},
+    })
+    # 厂商登录骨架（阶段 0 只解析、不参与现有分派；阶段 1 的引擎按 auth_mode 取用）。
+    # 带默认值，旧的 PortalProfile(...) 构造调用与旧 portal.json 均不受影响。
+    login: dict[str, Any] = field(default_factory=lambda: {
+        "path": "", "method": "POST", "callback": "",
+        "user_field": "username", "pass_field": "password",
+        "password_transform": "plain", "service_field": "",
+        "service_suffix": {}, "extra_params": {}, "ip_field": "",
+        "success": {"contains": [], "jsonp": False},
+        "failure": {"contains": []},
     })
 
     @property
@@ -151,6 +182,7 @@ def load_profile(path: str | Path | None) -> PortalProfile:
     credential_fields = workflow.get("credential_fields", {"username": "userName", "password": "userPwd", "auth_type": "authType"})
     service_fields = workflow.get("service_fields", {"session_id": "sessionId", "service": "serviceName"})
     simple_login = data.get("simple_login", {})
+    login = data.get("login", {})
     online = data["online_check"]
     conn = data.get("connectivity", {})
 
@@ -175,4 +207,5 @@ def load_profile(path: str | Path | None) -> PortalProfile:
         credential_fields=credential_fields,
         service_fields=service_fields,
         simple_login=simple_login,
+        login=login,
     )

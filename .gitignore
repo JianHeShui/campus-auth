@@ -9,6 +9,17 @@ build/
 dist/
 *.egg-info/
 
+# 虚拟环境（本地开发/构建用，不进仓库）
+.venv/
+venv/
+
+# 测试覆盖率报告
+.coverage
+htmlcov/
+
+# Windows 系统垃圾文件
+Thumbs.db
+
 # 打包辅助（本地下载的 PyInstaller 等，不进仓库）
 .pylibs/
 download_pyinstaller.py

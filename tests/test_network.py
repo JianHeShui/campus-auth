@@ -18,14 +18,14 @@ def _fake_connection(status: int = 200, body: str = ""):
 class NcsiProbeTests(unittest.TestCase):
     def test_true_when_body_matches_expected(self):
         conn = _fake_connection(200, "Microsoft Connect Test\r\n")
-        with patch.object(network.http.client, "HTTPConnection", return_value=conn) as ctor:
+        with patch.object(network, "BoundHTTPConnection", return_value=conn) as ctor:
             self.assertTrue(network._ncsi_probe(network._NCSI_HOST, 3))
-        ctor.assert_called_once_with(network._NCSI_HOST, 80, timeout=3)
+        ctor.assert_called_once_with(network._NCSI_HOST, 80, adapter=None, timeout=3)
         conn.request.assert_called_once_with("GET", "/connecttest.txt", headers={})
 
     def test_sends_host_header_for_ip_fallback(self):
         conn = _fake_connection(200, network._NCSI_EXPECT)
-        with patch.object(network.http.client, "HTTPConnection", return_value=conn):
+        with patch.object(network, "BoundHTTPConnection", return_value=conn):
             self.assertTrue(network._ncsi_probe("13.107.4.50", 3, use_host_header=True))
         conn.request.assert_called_once_with(
             "GET", "/connecttest.txt", headers={"Host": network._NCSI_HOST})
@@ -33,23 +33,31 @@ class NcsiProbeTests(unittest.TestCase):
     def test_false_when_body_is_captive_portal(self):
         """网关劫持页虽然返回 200，但不含 NCSI 正文，必须判失败。"""
         conn = _fake_connection(200, "<script>location.href='http://10.0.0.1/eportal'</script>")
-        with patch.object(network.http.client, "HTTPConnection", return_value=conn):
+        with patch.object(network, "BoundHTTPConnection", return_value=conn):
             self.assertFalse(network._ncsi_probe(network._NCSI_HOST, 3))
 
     def test_false_on_non_200_status(self):
         conn = _fake_connection(502, network._NCSI_EXPECT)
-        with patch.object(network.http.client, "HTTPConnection", return_value=conn):
+        with patch.object(network, "BoundHTTPConnection", return_value=conn):
             self.assertFalse(network._ncsi_probe(network._NCSI_HOST, 3))
 
     def test_false_on_connection_error(self):
-        with patch.object(network.http.client, "HTTPConnection", side_effect=OSError("boom")):
+        with patch.object(network, "BoundHTTPConnection", side_effect=OSError("boom")):
             self.assertFalse(network._ncsi_probe(network._NCSI_HOST, 3))
 
     def test_closes_connection(self):
         conn = _fake_connection(200, network._NCSI_EXPECT)
-        with patch.object(network.http.client, "HTTPConnection", return_value=conn):
+        with patch.object(network, "BoundHTTPConnection", return_value=conn):
             network._ncsi_probe(network._NCSI_HOST, 3)
         conn.close.assert_called_once()
+
+    def test_passes_adapter_to_bind_interface(self):
+        """多网卡时必须把 adapter 传给 BoundHTTPConnection，避免探测走错网卡。"""
+        conn = _fake_connection(200, network._NCSI_EXPECT)
+        adapter = MagicMock()
+        with patch.object(network, "BoundHTTPConnection", return_value=conn) as ctor:
+            self.assertTrue(network._ncsi_probe(network._NCSI_HOST, 3, adapter=adapter))
+        ctor.assert_called_once_with(network._NCSI_HOST, 80, adapter=adapter, timeout=3)
 
 
 class TriggerNcsiRefreshTests(unittest.TestCase):
@@ -65,7 +73,7 @@ class TriggerNcsiRefreshTests(unittest.TestCase):
         with patch("subprocess.run"), \
              patch.object(network, "_ncsi_probe", return_value=True) as probe:
             network.trigger_windows_ncsi_refresh()
-        probe.assert_called_once_with(network._NCSI_HOST, 5.0)
+        probe.assert_called_once_with(network._NCSI_HOST, 5.0, adapter=None)
 
     def test_falls_back_to_public_ips_in_order(self):
         results = iter([False, False, True])  # 域名失败 → 第一个 IP 失败 → 第二个 IP 成功
@@ -111,6 +119,14 @@ class InternetOkByIpTests(unittest.TestCase):
         with patch.object(network, "_ncsi_probe", return_value=False), \
              patch.object(network, "BoundHTTPConnection", side_effect=OSError("no route")):
             self.assertFalse(network.internet_ok_by_ip())
+
+    def test_passes_adapter_through_to_ncsi_probe(self):
+        """多网卡时必须把 adapter 透传给 NCSI 探测（否则可能走错网卡误判未联网）。"""
+        adapter = MagicMock()
+        with patch.object(network, "_ncsi_probe", return_value=True) as probe:
+            self.assertTrue(network.internet_ok_by_ip(adapter=adapter))
+        probe.assert_called_once_with(network._NCSI_IPS[0], 3.0,
+                                      use_host_header=True, adapter=adapter)
 
 
 class ExtractPortalUrlTests(unittest.TestCase):

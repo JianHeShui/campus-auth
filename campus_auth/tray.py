@@ -347,19 +347,31 @@ class TrayIcon:
             if cmd_id == ID_OPEN:
                 open_config()
             elif cmd_id == ID_START:
-                from .daemon import is_running, start, stop
+                from .daemon import ALREADY_RUNNING, STARTED, is_running, start_status, stop
                 was_running = is_running()
+                stopped = True
                 if was_running:
-                    stop()  # 已在保护中：先停止再启动，等同"重启保护"
-                if start():
-                    self._update_status()
-                    if was_running:
-                        _notify("自动保护", "保护已重新启动（新配置已生效）。")
-                    else:
-                        _notify("自动保护", "已开始保护（后台守护进程运行中）。")
-                else:
+                    stopped = stop()  # 已在保护中：先停止再启动，等同"重启保护"
+                if was_running and not stopped and is_running():
+                    # stop() 没停掉旧进程：不能提示"新配置已生效"（假重启）
                     _notify("自动保护",
-                            "启动失败。\n请先点「配置」填写门户信息并保存账号密码。", MB_ICONWARNING)
+                            "无法停止旧保护进程（缺少 PID 文件，可能是旧版本残留）。\n"
+                            "请用任务管理器结束 campus-auth.exe 后重试。",
+                            MB_ICONWARNING)
+                else:
+                    status = start_status()
+                    if status == ALREADY_RUNNING:
+                        self._update_status()
+                        _notify("自动保护", "保护进程已在运行（可能已由其他入口启动）。")
+                    elif status == STARTED:
+                        self._update_status()
+                        if was_running:
+                            _notify("自动保护", "保护已重新启动（新配置已生效）。")
+                        else:
+                            _notify("自动保护", "已开始保护（后台守护进程运行中）。")
+                    else:
+                        _notify("自动保护",
+                                "启动失败。\n请先点「配置」填写门户信息并保存账号密码。", MB_ICONWARNING)
             elif cmd_id == ID_STOP:
                 from .daemon import is_running, stop
                 if not is_running():

@@ -6,12 +6,34 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from campus_auth.portal import DEFAULT_PROFILE, deep_merge, load_profile, ProfileError
+from campus_auth.portal import DEFAULT_PROFILE, ProfileError, deep_merge, load_profile
 from campus_auth.state import RetryPolicy
 
 # 临时文件用系统临时目录：测试不依赖仓库可写（只读环境也能跑）
 _TMP_ROOT = Path(tempfile.mkdtemp(prefix="campus-auth-test-"))
 atexit.register(shutil.rmtree, _TMP_ROOT, True)
+
+# login 段骨架的全部字段（方案 §4.2）
+_LOGIN_KEYS = (
+    "path", "method", "callback", "user_field", "pass_field",
+    "password_transform", "service_field", "service_suffix",
+    "extra_params", "ip_field", "success", "failure",
+)
+
+
+def _isolated_profile_path() -> Path:
+    """返回一个不存在的临时路径，用作"默认画像"的加载入口。
+
+    load_profile(None) 会去项目根找真实的 portal.json，测试结果就会依赖本机配置；
+    显式传不存在的临时路径，确保画像 100% 来自 DEFAULT_PROFILE，与开发机隔离。
+    """
+    return _TMP_ROOT / "no-such-portal.json"
+
+
+def _write_profile(name: str, data: dict) -> Path:
+    file = _TMP_ROOT / name
+    file.write_text(json.dumps(data, ensure_ascii=False), encoding="utf-8")
+    return file
 
 
 class DeepMergeTests(unittest.TestCase):
@@ -26,16 +48,22 @@ class DeepMergeTests(unittest.TestCase):
 
 class ProfileTests(unittest.TestCase):
     def test_default_profile_loads(self):
-        profile = load_profile(None)
-        self.assertEqual(profile.host, "10.0.0.1")
-        self.assertEqual(profile.session_field, "sessionId")
+        # 显式传临时路径：不读真实 portal.json，断言以 DEFAULT_PROFILE 为准
+        profile = load_profile(_isolated_profile_path())
+        self.assertEqual(profile.host, DEFAULT_PROFILE["portal"]["host"])
+        self.assertEqual(profile.session_field, DEFAULT_PROFILE["session"]["field_name"])
+        self.assertEqual(profile.auth_mode, DEFAULT_PROFILE["auth_mode"])
+
+    def test_missing_profile_file_falls_back_to_defaults(self):
+        profile = load_profile(_isolated_profile_path())
+        self.assertEqual(profile.endpoints, DEFAULT_PROFILE["endpoints"])
+        self.assertEqual(profile.entry_path, DEFAULT_PROFILE["portal"]["entry_path"])
 
     def test_custom_profile_overrides(self):
-        file = _TMP_ROOT / "custom_portal.json"
-        file.write_text(json.dumps({
+        file = _write_profile("custom_portal.json", {
             "portal": {"host": "10.0.0.1"},
             "workflow": {"credential_fields": {"username": "account"}},
-        }), encoding="utf-8")
+        })
         try:
             profile = load_profile(file)
             self.assertEqual(profile.host, "10.0.0.1")
@@ -55,10 +83,111 @@ class ProfileTests(unittest.TestCase):
             file.unlink(missing_ok=True)
 
     def test_classify_error(self):
-        profile = load_profile(None)
+        profile = load_profile(_isolated_profile_path())
         self.assertEqual(profile.classify_error("账号或密码错误"), "password_wrong")
         self.assertEqual(profile.classify_error("请重新连网认证"), "session_expired")
         self.assertIsNone(profile.classify_error("未知信息"))
+
+
+class LoginSectionTests(unittest.TestCase):
+    """login 段骨架：默认值、覆盖解析、旧画像向后兼容（阶段 0 不参与认证分派）。"""
+
+    def test_login_defaults_match_constant(self):
+        profile = load_profile(_isolated_profile_path())
+        self.assertEqual(profile.login, DEFAULT_PROFILE["login"])
+        for key in _LOGIN_KEYS:
+            self.assertIn(key, profile.login)
+
+    def test_login_default_values(self):
+        login = load_profile(_isolated_profile_path()).login
+        self.assertEqual(login["path"], "")
+        self.assertEqual(login["method"], "POST")
+        self.assertEqual(login["password_transform"], "plain")
+        self.assertEqual(login["service_suffix"], {})
+        self.assertEqual(login["extra_params"], {})
+        self.assertEqual(login["success"], {"contains": [], "jsonp": False})
+        self.assertEqual(login["failure"], {"contains": []})
+
+    def test_login_full_override_parsed(self):
+        file = _write_profile("drcom_portal.json", {
+            "auth_mode": "drcom",
+            "login": {
+                "path": "/eportal/portal/login",
+                "method": "GET",
+                "callback": "dr1003",
+                "user_field": "user_account",
+                "pass_field": "user_password",
+                "password_transform": "base64",
+                "service_field": "service_type",
+                "service_suffix": {"中国移动": "@cmcc"},
+                "extra_params": {"login_method": "1"},
+                "ip_field": "wlan_user_ip",
+                "success": {"contains": ["Portal协议认证成功"], "jsonp": True},
+                "failure": {"contains": ["AC认证失败"]},
+            },
+        })
+        try:
+            profile = load_profile(file)
+        finally:
+            file.unlink(missing_ok=True)
+        login = profile.login
+        self.assertEqual(profile.auth_mode, "drcom")
+        self.assertEqual(login["path"], "/eportal/portal/login")
+        self.assertEqual(login["method"], "GET")
+        self.assertEqual(login["callback"], "dr1003")
+        self.assertEqual(login["user_field"], "user_account")
+        self.assertEqual(login["pass_field"], "user_password")
+        self.assertEqual(login["password_transform"], "base64")
+        self.assertEqual(login["service_field"], "service_type")
+        self.assertEqual(login["service_suffix"], {"中国移动": "@cmcc"})
+        self.assertEqual(login["extra_params"], {"login_method": "1"})
+        self.assertEqual(login["ip_field"], "wlan_user_ip")
+        self.assertEqual(login["success"]["contains"], ["Portal协议认证成功"])
+        self.assertTrue(login["success"]["jsonp"])
+        self.assertEqual(login["failure"]["contains"], ["AC认证失败"])
+
+    def test_login_partial_override_keeps_other_defaults(self):
+        """局部覆盖时深度合并：未写的键沿用默认，不会丢字段。"""
+        file = _write_profile("partial_login_portal.json", {
+            "login": {"path": "/portal/login", "method": "GET"},
+        })
+        try:
+            profile = load_profile(file)
+        finally:
+            file.unlink(missing_ok=True)
+        login = profile.login
+        self.assertEqual(login["path"], "/portal/login")
+        self.assertEqual(login["method"], "GET")
+        self.assertEqual(login["password_transform"], "plain")
+        self.assertEqual(login["user_field"], "username")
+        self.assertEqual(login["success"], {"contains": [], "jsonp": False})
+
+    def test_nested_success_partial_override(self):
+        """success 段局部覆盖：只改 jsonp，contains 默认值保留。"""
+        file = _write_profile("jsonp_login_portal.json", {
+            "login": {"success": {"jsonp": True}},
+        })
+        try:
+            profile = load_profile(file)
+        finally:
+            file.unlink(missing_ok=True)
+        self.assertTrue(profile.login["success"]["jsonp"])
+        self.assertEqual(profile.login["success"]["contains"], [])
+
+    def test_legacy_profile_without_login_section(self):
+        """旧 portal.json 没有 login 段时仍能加载（向后兼容）。"""
+        file = _write_profile("legacy_portal.json", {
+            "portal": {"host": "10.0.0.2"},
+            "simple_login": {"login_path": "/login"},
+        })
+        try:
+            profile = load_profile(file)
+        finally:
+            file.unlink(missing_ok=True)
+        self.assertEqual(profile.host, "10.0.0.2")
+        self.assertEqual(profile.simple_login["login_path"], "/login")
+        for key in _LOGIN_KEYS:
+            self.assertIn(key, profile.login)
 
 
 class RetryPolicyTests(unittest.TestCase):

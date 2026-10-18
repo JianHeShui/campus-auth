@@ -97,10 +97,10 @@ def cmd_configure(args: argparse.Namespace) -> int:
 
 def cmd_watch(args: argparse.Namespace) -> int:
     """静默守护：按退避策略周期重试。"""
-    from .daemon import MUTEX_NAME, clear_pid_file, write_pid_file
-
     # 单实例：已有守护循环在运行则直接退出，避免重复进程
     import ctypes
+
+    from .daemon import MUTEX_NAME, clear_pid_file, write_pid_file
     kernel32 = ctypes.windll.kernel32
     mutex = kernel32.CreateMutexW(None, False, MUTEX_NAME)
     if not mutex:
@@ -140,7 +140,7 @@ def cmd_watch(args: argparse.Namespace) -> int:
                     policy.on_success()
                     # 首次上线时刷新 Windows NCSI 状态指示器（避免每轮都刷）
                     if not was_online:
-                        trigger_windows_ncsi_refresh()
+                        trigger_windows_ncsi_refresh(adapter=client.adapter)
                         was_online = True
                     if not args.quiet:
                         print(f"[{time.strftime('%H:%M:%S')}] 已联网", flush=True)
@@ -247,6 +247,7 @@ def main(argv: list[str] | None = None) -> int:
         from .shortcut import ensure_desktop_shortcut
         ensure_desktop_shortcut()
         import subprocess
+
         from .tray import _python_command, _tool_root, run_tray
         cmd = _python_command("config")
         creationflags = getattr(subprocess, "CREATE_NO_WINDOW", 0)

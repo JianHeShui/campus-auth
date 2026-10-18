@@ -18,8 +18,8 @@
 
 | 版本 | 用法 |
 |---|---|
-| **`campus-auth-v0.3.0.zip`**（推荐） | 解压到任意文件夹 → 双击 `campus-auth.exe` 运行；启动快、杀软误报少 |
-| `campus-auth-v0.3.0-单文件版.exe` | 单个 exe，双击即用、免解压；首次启动稍慢（需自解压），若杀软拦截请添加信任 |
+| **`campus-auth-v0.3.1.zip`**（推荐） | 解压到任意文件夹 → 双击 `campus-auth.exe` 运行；启动快、杀软误报少 |
+| `campus-auth-v0.3.1-单文件版.exe` | 单个 exe，双击即用、免解压；首次启动稍慢（需自解压），若杀软拦截请添加信任 |
 
 > 首次运行会在桌面自动创建「校园网自动登录」快捷方式，并弹出配置界面 + 启动托盘。
 > 建议先看一遍「使用教程」（配置界面右上角会自动弹出）。
@@ -149,7 +149,7 @@ powershell -ExecutionPolicy Bypass -File .\build.ps1
 
 ```powershell
 python -m unittest discover -s tests -v
-# 135 项测试，全部不触网；CI 配置见 .github/workflows/tests.yml（Windows + Python 3.10/3.12）
+# 171 项测试，全部不触网；CI 配置见 .github/workflows/tests.yml（Windows + Python 3.10/3.12）
 ```
 
 本项目为对门户进行**黑盒探测后的独立实现**，未参考第三方登录工具源码，声明见 [docs/portal-profile.md](docs/portal-profile.md)。
