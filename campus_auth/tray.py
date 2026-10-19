@@ -1,8 +1,15 @@
 """系统托盘：用 Shell_NotifyIcon（ctypes，纯标准库）实现常驻托盘图标。
 
-托盘右键菜单：状态（保护中/未保护）/ 配置 / 开始保护 / 停止保护 / 退出；左键双击打开配置。
-悬浮提示（tooltip）实时显示当前保护状态，每 5 秒同步一次；
-「开始保护」在已保护时会先停止再启动（重启守护进程，让新配置生效）；
+托盘右键菜单：状态（自动保护中/未保护）/ 开机自启状态 / 配置 / 开启（重启）自动保护 /
+停止自动保护 / 退出；左键双击打开配置。悬浮提示（tooltip）实时显示
+「保护状态 + 开机自启状态」，每 5 秒同步一次。
+
+语义区分（与配置界面、README 保持一致）：
+- 自动保护 = 后台守护进程持续运行、断线自动重连，直到手动停止（**不是单次登录**）；
+- 开机自启 = 开机后自动以托盘运行并开启自动保护，一直常驻；
+- 单次登录 = 只认证一次、不常驻，由命令行 `campus-auth login` 提供。
+
+「开启自动保护」在已保护时会先停止再启动（重启守护进程，让新配置生效）；
 退出托盘会一并停止守护进程。
 """
 from __future__ import annotations
@@ -44,6 +51,7 @@ ID_OPEN = 1001
 ID_START = 1002
 ID_EXIT = 1003
 ID_STOP = 1004
+ID_AUTOSTART_STATUS = 1005
 
 TIMER_ID = 1
 STATUS_POLL_MS = 5000
@@ -61,9 +69,26 @@ def _status_text(protected: bool) -> str:
     return PROTECTED_TEXT if protected else UNPROTECTED_TEXT
 
 
-def _tray_tip(protected: bool) -> str:
-    """托盘悬浮提示：显示当前是否处于保护状态。"""
-    return f"校园网自动保护：{_status_text(protected)}"
+def _autostart_text(enabled: bool) -> str:
+    """开机自启状态文案：明确区分「开机后一直运行」与「仅本次运行」。"""
+    return "已开启（开机后常驻）" if enabled else "未开启（仅本次运行）"
+
+
+def _tray_tip(protected: bool, auto_start: bool | None = None) -> str:
+    """托盘悬浮提示：保护状态，可选附带开机自启状态（区分是否一直运行）。"""
+    tip = f"校园网自动保护：{_status_text(protected)}"
+    if auto_start is not None:
+        tip += f" · 开机自启：{_autostart_text(auto_start)}"
+    return tip
+
+
+def _read_autostart() -> bool:
+    """读取开机自启状态（失败按未开启处理，不能影响托盘运行）。"""
+    try:
+        from .startup import startup_enabled
+        return bool(startup_enabled())
+    except Exception:
+        return False
 
 # ---- Win32 结构体 ----
 WNDPROC = ctypes.WINFUNCTYPE(ctypes.c_longlong, wintypes.HWND, wintypes.UINT,
@@ -292,8 +317,8 @@ class TrayIcon:
             return False
 
     def _update_status(self) -> None:
-        """把保护状态同步到托盘悬浮提示（仅在状态变化时刷新）。"""
-        tip = _tray_tip(self._is_protected())
+        """把保护状态 + 开机自启状态同步到托盘悬浮提示（仅在文本变化时刷新）。"""
+        tip = _tray_tip(self._is_protected(), _read_autostart())
         if tip == self._tip:
             return
         self._tip = tip
@@ -311,15 +336,19 @@ class TrayIcon:
     def _show_menu(self) -> None:
         self._update_status()
         protected = self._is_protected()
+        auto_start = _read_autostart()
         menu = _user32.CreatePopupMenu()
-        # 首行显示当前状态（灰色不可点），让用户一眼看到是否处于保护中
-        _user32.AppendMenuW(menu, MF_STRING | MF_GRAYED, ID_STATUS,
-                            f"状态：{_status_text(protected)}")
+        # 前两行是只读状态：是否处于「自动保护」（持续运行）以及是否开机自启（一直运行）
+        state_label = (f"状态：{PROTECTED_TEXT}（自动保护，持续运行）" if protected
+                       else f"状态：{UNPROTECTED_TEXT}（未开启自动保护）")
+        _user32.AppendMenuW(menu, MF_STRING | MF_GRAYED, ID_STATUS, state_label)
+        _user32.AppendMenuW(menu, MF_STRING | MF_GRAYED, ID_AUTOSTART_STATUS,
+                            f"开机自启：{_autostart_text(auto_start)}")
         _user32.AppendMenuW(menu, MF_SEPARATOR, 0, None)
         _user32.AppendMenuW(menu, MF_STRING, ID_OPEN, "配置")
         _user32.AppendMenuW(menu, MF_STRING, ID_START,
-                            "重新开始保护" if protected else "开始保护")
-        _user32.AppendMenuW(menu, MF_STRING, ID_STOP, "停止保护")
+                            "重启自动保护" if protected else "开启自动保护")
+        _user32.AppendMenuW(menu, MF_STRING, ID_STOP, "停止自动保护")
         _user32.AppendMenuW(menu, MF_SEPARATOR, 0, None)
         _user32.AppendMenuW(menu, MF_STRING, ID_EXIT, "退出")
 
@@ -355,32 +384,35 @@ class TrayIcon:
                 if was_running and not stopped and is_running():
                     # stop() 没停掉旧进程：不能提示"新配置已生效"（假重启）
                     _notify("自动保护",
-                            "无法停止旧保护进程（缺少 PID 文件，可能是旧版本残留）。\n"
+                            "无法停止旧自动保护进程（缺少 PID 文件，可能是旧版本残留）。\n"
                             "请用任务管理器结束 campus-auth.exe 后重试。",
                             MB_ICONWARNING)
                 else:
                     status = start_status()
                     if status == ALREADY_RUNNING:
                         self._update_status()
-                        _notify("自动保护", "保护进程已在运行（可能已由其他入口启动）。")
+                        _notify("自动保护", "自动保护已在运行（可能已由其他入口开启）。")
                     elif status == STARTED:
                         self._update_status()
                         if was_running:
-                            _notify("自动保护", "保护已重新启动（新配置已生效）。")
+                            _notify("自动保护", "已重启自动保护（新配置已生效）。")
                         else:
-                            _notify("自动保护", "已开始保护（后台守护进程运行中）。")
+                            _notify("自动保护",
+                                    "已开启自动保护：后台持续运行、断线自动重连。\n"
+                                    "关闭配置窗口不影响；停止请用本菜单「停止自动保护」。")
                     else:
                         _notify("自动保护",
-                                "启动失败。\n请先点「配置」填写门户信息并保存账号密码。", MB_ICONWARNING)
+                                "开启自动保护失败。\n请先点「配置」填写门户信息并保存账号密码。",
+                                MB_ICONWARNING)
             elif cmd_id == ID_STOP:
                 from .daemon import is_running, stop
                 if not is_running():
-                    _notify("自动保护", "当前未处于保护状态。")
+                    _notify("自动保护", "当前未开启自动保护。")
                 elif stop():
                     self._update_status()
-                    _notify("自动保护", "已停止保护。")
+                    _notify("自动保护", "已停止自动保护。")
                 else:
-                    _notify("自动保护", "停止失败，请稍后重试。", MB_ICONWARNING)
+                    _notify("自动保护", "停止自动保护失败，请稍后重试。", MB_ICONWARNING)
             elif cmd_id == ID_EXIT:
                 from .daemon import stop as daemon_stop
                 daemon_stop()  # 退出托盘时一并结束守护，避免残留后台进程

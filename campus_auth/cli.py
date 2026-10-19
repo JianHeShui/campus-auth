@@ -96,7 +96,7 @@ def cmd_configure(args: argparse.Namespace) -> int:
 
 
 def cmd_watch(args: argparse.Namespace) -> int:
-    """静默守护：按退避策略周期重试。"""
+    """静默守护（自动保护）：按退避策略周期重试，断线自动重连，直到进程被停止。"""
     # 单实例：已有守护循环在运行则直接退出，避免重复进程
     import ctypes
 
@@ -171,7 +171,7 @@ def cmd_autostart(args: argparse.Namespace) -> int:
         except OSError as exc:
             print(f"启用失败: {exc}", file=sys.stderr)
             return 1
-        print("已启用开机自启（登录 Windows 后自动连接）")
+        print("已启用开机自启（开机后自动以托盘运行并开启自动保护，一直常驻）")
     elif state == "off":
         try:
             set_startup(False)
@@ -180,12 +180,16 @@ def cmd_autostart(args: argparse.Namespace) -> int:
             return 1
         print("已禁用开机自启")
     else:
-        print("开机自启：已启用" if startup_enabled() else "开机自启：未启用")
+        print("开机自启：已启用（开机后一直运行并自动保护）" if startup_enabled()
+              else "开机自启：未启用（仅手动运行时保护）")
     return 0
 
 
 def build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(prog="campus-auth", description="锐捷 SAM+ 校园网自动认证（接口直连）")
+    parser = argparse.ArgumentParser(
+        prog="campus-auth",
+        description="校园网自动认证（接口直连）：自动保护 = 后台持续守护、断线自动重连；"
+                    "login = 单次登录，不常驻。")
     parser.add_argument("--version", action="version", version=f"%(prog)s {__version__}")
     parser.add_argument("--portal", help="portal.json 路径（默认用内置画像）")
     parser.add_argument("--adapter", help="指定网卡（IPv4 或 MAC）")
@@ -194,9 +198,9 @@ def build_parser() -> argparse.ArgumentParser:
 
     sub = parser.add_subparsers(dest="command", required=False)
 
-    sub.add_parser("check", help="只检查是否已联网").set_defaults(func=cmd_check)
+    sub.add_parser("check", help="只检查是否已联网（不认证）").set_defaults(func=cmd_check)
 
-    p_login = sub.add_parser("login", help="执行一次认证")
+    p_login = sub.add_parser("login", help="执行一次认证（单次登录，不常驻）")
     p_login.set_defaults(func=cmd_login)
 
     p_conf = sub.add_parser("configure", help="保存账号密码")
@@ -205,18 +209,18 @@ def build_parser() -> argparse.ArgumentParser:
     p_conf.add_argument("--service", help="服务/运营商（可空）")
     p_conf.set_defaults(func=cmd_configure)
 
-    p_watch = sub.add_parser("watch", help="静默守护循环")
+    p_watch = sub.add_parser("watch", help="自动保护：后台持续守护、断线自动重连（需手动停止）")
     p_watch.add_argument("--interval", type=float, default=15, help="轮询间隔秒数")
     p_watch.add_argument("--max-interval", type=int, default=300, help="退避上限秒数")
     p_watch.add_argument("--startup", action="store_true", help="开机自启模式（配合 --delay 延时启动）")
     p_watch.add_argument("--delay", type=float, default=10, help="开机自启延时秒数（等网络就绪）")
     p_watch.set_defaults(func=cmd_watch)
 
-    p_auto = sub.add_parser("autostart", help="查询或设置开机自启")
+    p_auto = sub.add_parser("autostart", help="查询或设置开机自启（开机后一直运行并自动保护）")
     p_auto.add_argument("state", nargs="?", choices=("on", "off"), help="on 启用 / off 禁用 / 不填则查询")
     p_auto.set_defaults(func=cmd_autostart)
 
-    p_tray = sub.add_parser("tray", help="以系统托盘图标常驻运行")
+    p_tray = sub.add_parser("tray", help="以系统托盘常驻运行（自动保护）")
     p_tray.set_defaults(func=cmd_tray)
 
     p_conf = sub.add_parser("config", help="打开门户配置界面（图形界面）")

@@ -273,6 +273,12 @@ PORTAL_TEMPLATES: dict[str, dict | None] = {
 # 使用教程内容
 TUTORIAL_TEXT = """这个工具帮你自动登录校园网：配置一次，即可后台守护、断线自动重连。
 
+先分清三种运行方式：
+· 自动保护（本界面按钮）：后台持续运行、断线自动重连，
+  直到你在托盘菜单点「停止自动保护」——不是只登录一次。
+· 单次登录：只认证一次、不常驻（命令行 campus-auth login 提供）。
+· 开机自启：勾选后开机自动以托盘运行并开启自动保护，一直常驻。
+
 ① 填写门户地址
    输入学校认证页地址（形如 10.0.0.1），
    或断网时点「自动获取」一键提取
@@ -284,12 +290,14 @@ TUTORIAL_TEXT = """这个工具帮你自动登录校园网：配置一次，即�
 ③ 一键生成配置
    点「一键生成配置」，接口细节自动填好
 
-④ 开始自动保护
-   点底部「开始自动保护」，填写账号、密码、运营商，
-   程序即在后台守护，断线自动重连（再次点击会自动重启保护）
+④ 开始自动保护（持续守护）
+   点底部「开始自动保护」，填写账号、密码、运营商。
+   程序会在后台持续守护、断线自动重连（关闭窗口不影响），
+   不是单次登录；再次点击会自动重启保护。
 
 ⑤ 开机自启（可选）
-   勾选后，重启电脑自动以托盘运行
+   勾选后，开机登录 Windows 会自动以托盘运行并开启自动保护，
+   之后一直常驻；取消勾选则仅本次运行有效。
 
 ──────
 免责声明：本工具仅供学习交流，用于自动完成本人账号在所在校园网的认证，请遵守所在学校网络使用规定；使用产生的一切后果由使用者自行承担。"""
@@ -338,6 +346,16 @@ def _credentials_file_hint() -> str:
     """凭据文件路径（用于提示用户）。"""
     from .config import CREDENTIALS_FILE
     return str(CREDENTIALS_FILE)
+
+
+def _autostart_hint(enabled: bool) -> str:
+    """开机自启状态的中文说明（配置界面启动成功弹窗使用）。
+
+    明确区分「开机后一直运行」与「仅本次运行」，避免用户误以为已常驻。
+    """
+    if enabled:
+        return "已开启（开机后自动运行并持续保护）"
+    return "未开启（仅本次运行，电脑重启后需重新打开）"
 
 
 class ConfigWindow:
@@ -560,7 +578,7 @@ class ConfigWindow:
         tk.Label(top, text="三步完成配置，让工具自动登录校园网",
                  bg=C["card"], fg=C["muted"], font=(F["ui"], 10)).pack(side="top", anchor="w", padx=24, pady=(0, 12))
 
-        content = tk.Text(top, height=12, bg=C["card"], fg=C["text"], font=(F["ui"], 10),
+        content = tk.Text(top, height=14, bg=C["card"], fg=C["text"], font=(F["ui"], 10),
                           relief="flat", wrap="word", spacing1=2, spacing3=6,
                           highlightthickness=0, cursor="arrow")
         content.pack(side="top", fill="both", expand=True, padx=24, pady=(0, 12))
@@ -625,7 +643,7 @@ class ConfigWindow:
         # 开机自启
         from .startup import startup_enabled
         self.autostart_var = tk.BooleanVar(value=startup_enabled())
-        tk.Checkbutton(card, text="开机自启（登录 Windows 后自动连接）",
+        tk.Checkbutton(card, text="开机自启（开机后一直运行并自动保护）",
                        variable=self.autostart_var, command=self._toggle_autostart,
                        bg=C["card"], fg=C["text"], activebackground=C["card"],
                        activeforeground=C["text"], selectcolor=C["card"],
@@ -976,8 +994,10 @@ class ConfigWindow:
         footer.pack(side="bottom", fill="x", padx=18, pady=(0, 14))
         self.footer_widget = footer
 
-        tk.Label(footer, text="提示：「开始自动保护」会自动保存配置，无需手动点「保存 JSON」。",
-                 bg=C["page"], fg=C["muted"], font=(F["ui"], 9)).pack(anchor="w", pady=(0, 10))
+        tk.Label(footer, text="「开始自动保护」= 后台持续守护、断线自动重连（不是单次登录；单次登录请用命令行 login）。",
+                 bg=C["page"], fg=C["muted"], font=(F["ui"], 9)).pack(anchor="w", pady=(0, 2))
+        tk.Label(footer, text="会自动保存配置，无需手动点「保存 JSON」；停止保护在托盘右键菜单。",
+                 bg=C["page"], fg=C["muted"], font=(F["ui"], 9)).pack(anchor="w", pady=(0, 8))
 
         buttons = tk.Frame(footer, bg=C["page"])
         buttons.pack(fill="x")
@@ -1072,18 +1092,28 @@ class ConfigWindow:
         if status != STARTED:
             messagebox.showerror(
                 "启动失败",
-                "无法启动后台保护进程。\n\n请确认程序目录完整，或改用托盘菜单「开始保护」重试。")
+                "无法启动后台自动保护进程。\n\n"
+                "请确认程序目录完整，或改用托盘菜单「开启自动保护」重试。")
             return
+        from .startup import startup_enabled
+        auto_hint = _autostart_hint(startup_enabled())
         if was_running:
             messagebox.showinfo(
-                "已重新开始保护",
-                f"保护已重新启动，新配置已生效。\n\n配置已保存到：{portal_file}\n"
-                f"账号密码保存在：{_credentials_file_hint()}\n\n关闭本窗口不影响后台运行。")
+                "已重启自动保护",
+                f"自动保护已重启，新配置已生效。\n\n"
+                f"运行方式：后台持续守护、断线自动重连（关闭本窗口不影响；"
+                f"停止请用托盘菜单「停止自动保护」）。\n"
+                f"开机自启：{auto_hint}\n\n"
+                f"配置已保存到：{portal_file}\n"
+                f"账号密码保存在：{_credentials_file_hint()}")
         else:
             messagebox.showinfo(
-                "已开始保护",
-                f"自动保护已在后台独立进程运行。\n\n配置已保存到：{portal_file}\n"
-                f"账号密码保存在：{_credentials_file_hint()}\n\n关闭本窗口不影响后台运行。")
+                "已开启自动保护",
+                f"自动保护已在后台持续运行：断线自动重连，关闭本窗口不影响"
+                f"（停止请用托盘菜单「停止自动保护」）。\n\n"
+                f"开机自启：{auto_hint}\n\n"
+                f"配置已保存到：{portal_file}\n"
+                f"账号密码保存在：{_credentials_file_hint()}")
 
     def _prompt_credentials(self):
         """弹窗输入账号密码与运营商，返回 Credentials 或 None。"""

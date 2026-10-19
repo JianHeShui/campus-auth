@@ -4,6 +4,7 @@ import unittest
 from campus_auth.config_gui import (
     ConfigWindow,
     _apply_address,
+    _autostart_hint,
     _format_address,
     _parse_address,
 )
@@ -90,6 +91,20 @@ class AddressRoundTripTests(unittest.TestCase):
         data = {"portal": {}}
         _apply_address(data, "10.0.0.1")
         self.assertEqual(data["portal"], {"host": "10.0.0.1", "port": 80, "scheme": "http"})
+
+
+class AutostartHintTests(unittest.TestCase):
+    """启动成功弹窗中的开机自启说明：必须区分「一直运行」与「仅本次运行」。"""
+
+    def test_enabled_mentions_always_on(self):
+        hint = _autostart_hint(True)
+        self.assertIn("已开启", hint)
+        self.assertIn("开机后自动运行", hint)
+
+    def test_disabled_mentions_this_run_only(self):
+        hint = _autostart_hint(False)
+        self.assertIn("未开启", hint)
+        self.assertIn("仅本次运行", hint)
 
 
 class DetectConsistencyTests(unittest.TestCase):

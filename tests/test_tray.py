@@ -53,5 +53,38 @@ class ProtectionStatusTests(unittest.TestCase):
         self.assertGreaterEqual(tray.STATUS_POLL_MS, 1000)
 
 
+class AutostartStatusTests(unittest.TestCase):
+    """开机自启状态文案：区分「开机后一直运行」与「仅本次运行」。"""
+
+    def test_autostart_text_always_on_vs_this_run(self):
+        enabled = tray._autostart_text(True)
+        disabled = tray._autostart_text(False)
+        self.assertIn("已开启", enabled)
+        self.assertIn("常驻", enabled)
+        self.assertIn("未开启", disabled)
+        self.assertIn("仅本次运行", disabled)
+
+    def test_tray_tip_includes_autostart_state(self):
+        enabled_tip = tray._tray_tip(True, auto_start=True)
+        self.assertIn("保护中", enabled_tip)
+        self.assertIn("开机自启", enabled_tip)
+        self.assertIn("已开启", enabled_tip)
+        disabled_tip = tray._tray_tip(False, auto_start=False)
+        self.assertIn("未保护", disabled_tip)
+        self.assertIn("未开启", disabled_tip)
+
+    def test_read_autostart_reads_registry(self):
+        import campus_auth.startup as startup
+        with patch.object(startup, "startup_enabled", return_value=True):
+            self.assertTrue(tray._read_autostart())
+        with patch.object(startup, "startup_enabled", return_value=False):
+            self.assertFalse(tray._read_autostart())
+
+    def test_read_autostart_swallows_errors(self):
+        import campus_auth.startup as startup
+        with patch.object(startup, "startup_enabled", side_effect=RuntimeError("boom")):
+            self.assertFalse(tray._read_autostart())
+
+
 if __name__ == "__main__":
     unittest.main()
