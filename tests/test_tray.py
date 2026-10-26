@@ -86,5 +86,32 @@ class AutostartStatusTests(unittest.TestCase):
             self.assertFalse(tray._read_autostart())
 
 
+class CloseConfigWindowTests(unittest.TestCase):
+    """托盘「退出」时关闭正在打开的配置界面窗口（不调用真实 Win32）。"""
+
+    def test_closes_found_window(self):
+        with patch.object(tray, "_find_config_window", return_value=1234), \
+             patch.object(tray, "_request_close_window", return_value=True) as close:
+            self.assertTrue(tray.close_config_windows())
+        close.assert_called_once_with(1234)
+
+    def test_no_window_is_noop(self):
+        with patch.object(tray, "_find_config_window", return_value=0), \
+             patch.object(tray, "_request_close_window") as close:
+            self.assertFalse(tray.close_config_windows())
+        close.assert_not_called()
+
+    def test_send_failure_returns_false(self):
+        with patch.object(tray, "_find_config_window", return_value=1), \
+             patch.object(tray, "_request_close_window", return_value=False):
+            self.assertFalse(tray.close_config_windows())
+
+    def test_window_title_constant_shared(self):
+        """config_gui 与 tray 必须用同一个窗口标题常量（否则托盘找不到配置窗口）。"""
+        from campus_auth import CONFIG_WINDOW_TITLE
+        self.assertEqual(tray.CONFIG_WINDOW_TITLE, CONFIG_WINDOW_TITLE)
+        self.assertTrue(CONFIG_WINDOW_TITLE)
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -9,6 +9,7 @@ import tkinter as tk
 from pathlib import Path
 from tkinter import filedialog, messagebox, ttk
 
+from . import CONFIG_WINDOW_TITLE
 from .portal import DEFAULT_PROFILE, deep_merge
 from .theme import C as _TC
 from .theme import S as _TS
@@ -394,7 +395,7 @@ class ConfigWindow:
         self.detect_btn = None
         self.fetch_btn = None
 
-        root.title("校园网认证 · 门户配置")
+        root.title(CONFIG_WINDOW_TITLE)
         # 按屏幕可用区自适应：小屏（1366×768 等）不至于超出屏幕 / 按钮被裁
         screen_w, screen_h = root.winfo_screenwidth(), root.winfo_screenheight()
         width = max(900, min(1120, screen_w - 120))
@@ -1369,7 +1370,7 @@ def _activate_existing() -> None:
     """激活已打开的配置窗口（按标题查找并置前）。"""
     import ctypes
     user32 = ctypes.windll.user32
-    hwnd = user32.FindWindowW(None, "校园网认证 · 门户配置")
+    hwnd = user32.FindWindowW(None, CONFIG_WINDOW_TITLE)
     if hwnd:
         user32.ShowWindow(hwnd, 9)  # SW_RESTORE
         user32.SetForegroundWindow(hwnd)

@@ -10,7 +10,7 @@
 - 单次登录 = 只认证一次、不常驻，由命令行 `campus-auth login` 提供。
 
 「开启自动保护」在已保护时会先停止再启动（重启守护进程，让新配置生效）；
-退出托盘会一并停止守护进程。
+退出托盘会一并停止守护进程，并关闭正在打开的配置界面窗口。
 """
 from __future__ import annotations
 
@@ -20,8 +20,11 @@ import sys
 from ctypes import wintypes
 from pathlib import Path
 
+from . import CONFIG_WINDOW_TITLE
+
 # ---- Win32 常量 ----
 WM_DESTROY = 0x0002
+WM_CLOSE = 0x0010
 WM_COMMAND = 0x0111
 WM_TIMER = 0x0113
 WM_LBUTTONUP = 0x0202
@@ -165,6 +168,8 @@ _user32.GetCursorPos.argtypes = [ctypes.POINTER(POINT)]
 _user32.GetCursorPos.restype = wintypes.BOOL
 _user32.SetForegroundWindow.argtypes = [wintypes.HWND]
 _user32.SetForegroundWindow.restype = wintypes.BOOL
+_user32.FindWindowW.argtypes = [wintypes.LPCWSTR, wintypes.LPCWSTR]
+_user32.FindWindowW.restype = wintypes.HWND
 _user32.PostMessageW.argtypes = [wintypes.HWND, wintypes.UINT, wintypes.WPARAM, wintypes.LPARAM]
 _user32.PostMessageW.restype = wintypes.BOOL
 _user32.DestroyWindow.argtypes = [wintypes.HWND]
@@ -253,6 +258,39 @@ def _no_window_flag() -> int:
 def open_config() -> None:
     subprocess.Popen(_python_command("config"), cwd=str(_tool_root()),
                      creationflags=_no_window_flag())
+
+
+def _find_config_window() -> int:
+    """查找正在打开的配置界面主窗口句柄（没有返回 0）。
+
+    配置窗口标题由 campus_auth.CONFIG_WINDOW_TITLE 统一维护，config_gui 创建窗口
+    与托盘查找窗口用同一个常量，避免标题不一致导致找不到。
+    """
+    try:
+        return int(_user32.FindWindowW(None, CONFIG_WINDOW_TITLE) or 0)
+    except Exception:
+        return 0
+
+
+def _request_close_window(hwnd) -> bool:
+    """向窗口发送 WM_CLOSE，让它走正常关闭流程（配置界面会先自动保存 portal.json）。"""
+    try:
+        _user32.PostMessageW(hwnd, WM_CLOSE, 0, 0)
+        return True
+    except Exception:
+        return False
+
+
+def close_config_windows() -> bool:
+    """关闭正在打开的配置界面窗口；返回是否找到了窗口。
+
+    退出托盘时调用：发送 WM_CLOSE 而不是强杀进程，配置界面会走 _on_close
+    （自动保存配置）后正常退出。
+    """
+    hwnd = _find_config_window()
+    if not hwnd:
+        return False
+    return _request_close_window(hwnd)
 
 
 class TrayIcon:
@@ -415,6 +453,9 @@ class TrayIcon:
                     _notify("自动保护", "停止自动保护失败，请稍后重试。", MB_ICONWARNING)
             elif cmd_id == ID_EXIT:
                 from .daemon import stop as daemon_stop
+                # 先把正在打开的配置界面关掉（WM_CLOSE 走正常关闭流程，会先保存配置），
+                # 再结束守护进程、删除托盘图标，避免退出后残留窗口。
+                close_config_windows()
                 daemon_stop()  # 退出托盘时一并结束守护，避免残留后台进程
                 self._delete()
                 _user32.DestroyWindow(hwnd)
