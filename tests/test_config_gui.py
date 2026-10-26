@@ -1,13 +1,17 @@
 """配置界面纯函数测试：端口校验、地址解析与「地址框 → 画像」往返（不创建窗口）。"""
+import json
 import unittest
 
 from campus_auth.config_gui import (
+    _FIELD_LABELS,
     ConfigWindow,
     _apply_address,
     _autostart_hint,
     _format_address,
     _parse_address,
+    _parse_seconds,
 )
+from campus_auth.portal import DEFAULT_PROFILE
 
 
 class ParsePortTests(unittest.TestCase):
@@ -32,6 +36,121 @@ class ParsePortTests(unittest.TestCase):
         with self.assertRaises(ValueError) as ctx:
             ConfigWindow._parse_port("bad", "外网探测端口")
         self.assertIn("外网探测端口", str(ctx.exception))
+
+
+class ParseSecondsTests(unittest.TestCase):
+    """自动保护间隔：必须是 5-3600 的整数秒（范围与 cli.py 保持一致）。"""
+
+    def test_valid_values(self):
+        for value, expected in (("5", 5), ("60", 60), ("300", 300), ("3600", 3600)):
+            with self.subTest(value=value):
+                self.assertEqual(_parse_seconds(value, "在线复核间隔"), expected)
+
+    def test_strip_whitespace(self):
+        self.assertEqual(_parse_seconds("  60  ", "在线复核间隔"), 60)
+        self.assertEqual(_parse_seconds("\t300\n", "失败重试上限"), 300)
+
+    def test_non_integer_rejected(self):
+        for value in ("", " ", "abc", "60.5", "1e2", "60秒"):
+            with self.subTest(value=value):
+                with self.assertRaises(ValueError):
+                    _parse_seconds(value, "在线复核间隔")
+
+    def test_negative_rejected(self):
+        for value in ("-1", "-300"):
+            with self.subTest(value=value):
+                with self.assertRaises(ValueError):
+                    _parse_seconds(value, "在线复核间隔")
+
+    def test_out_of_range_rejected(self):
+        for value in ("0", "4", "3601", "9999"):
+            with self.subTest(value=value):
+                with self.assertRaises(ValueError):
+                    _parse_seconds(value, "在线复核间隔")
+
+    def test_error_message_contains_label(self):
+        for value in ("bad", "0", "3601"):
+            with self.subTest(value=value):
+                with self.assertRaises(ValueError) as ctx:
+                    _parse_seconds(value, "失败重试上限")
+                self.assertIn("失败重试上限", str(ctx.exception))
+
+
+class _StubVar:
+    """最小 StringVar 替身：_collect 只调用 .get()，无需创建真实 Tk 控件。"""
+
+    def __init__(self, value: str):
+        self.value = value
+
+    def get(self) -> str:
+        return self.value
+
+
+class WatchCollectTests(unittest.TestCase):
+    """_collect：watch 间隔字段走 _parse_seconds 转 int，其余字段逻辑不变。"""
+
+    @staticmethod
+    def _window(**values: str) -> ConfigWindow:
+        window = ConfigWindow.__new__(ConfigWindow)  # 绕过 __init__，避免创建 Tk 窗口
+        window.vars = {key: _StubVar(value) for key, value in values.items()}
+        window.mode_var = _StubVar("workflow")
+        window.address_var = None
+        window.extra_fields_text = None
+        window.error_markers_text = None
+        return window
+
+    def test_watch_fields_are_ints(self):
+        window = self._window(**{
+            "watch.recheck_interval": "120",
+            "watch.max_interval": "300",
+        })
+        data = window._collect()
+        self.assertEqual(data["watch"]["recheck_interval"], 120)
+        self.assertEqual(data["watch"]["max_interval"], 300)
+        # GUI 不暴露 network_events：保存时必须保留默认 True
+        self.assertTrue(data["watch"]["network_events"])
+
+    def test_invalid_watch_value_rejected(self):
+        for key in ("watch.recheck_interval", "watch.max_interval"):
+            with self.subTest(key=key):
+                window = self._window(**{key: "0"})
+                with self.assertRaises(ValueError) as ctx:
+                    window._collect()
+                self.assertIn(_FIELD_LABELS[key], str(ctx.exception))
+
+    def test_network_events_false_is_preserved(self):
+        """用户手改 portal.json 关闭 network_events 后，GUI 保存不应重置为 true。"""
+        window = self._window(**{
+            "watch.recheck_interval": "60",
+            "watch.max_interval": "300",
+        })
+        loaded = json.loads(json.dumps(DEFAULT_PROFILE))
+        loaded["watch"]["network_events"] = False
+        window._loaded_data = loaded
+        data = window._collect()
+        self.assertFalse(data["watch"]["network_events"])
+        self.assertEqual(data["watch"]["recheck_interval"], 60)
+
+    def test_loaded_login_section_preserved(self):
+        """表单未展开的 login 段在保存时必须保留，不被默认值覆盖。"""
+        window = self._window(**{
+            "watch.recheck_interval": "60",
+            "watch.max_interval": "300",
+        })
+        loaded = json.loads(json.dumps(DEFAULT_PROFILE))
+        loaded["login"]["path"] = "/eportal/portal/login"
+        loaded["login"]["callback"] = "dr1003"
+        window._loaded_data = loaded
+        data = window._collect()
+        self.assertEqual(data["login"]["path"], "/eportal/portal/login")
+        self.assertEqual(data["login"]["callback"], "dr1003")
+
+
+class FieldLabelTests(unittest.TestCase):
+    def test_watch_labels_present(self):
+        for key in ("watch.recheck_interval", "watch.max_interval"):
+            with self.subTest(key=key):
+                self.assertIn(key, _FIELD_LABELS)
 
 
 class ParseAddressTests(unittest.TestCase):

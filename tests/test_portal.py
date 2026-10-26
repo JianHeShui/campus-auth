@@ -190,6 +190,49 @@ class LoginSectionTests(unittest.TestCase):
             self.assertIn(key, profile.login)
 
 
+class WatchSectionTests(unittest.TestCase):
+    """自动保护参数（watch 段）：默认值、覆盖解析、旧画像兼容（v0.3.2）。"""
+
+    def test_watch_defaults(self):
+        watch = load_profile(_isolated_profile_path()).watch
+        self.assertEqual(watch["recheck_interval"], 60)
+        self.assertEqual(watch["max_interval"], 300)
+        self.assertTrue(watch["network_events"])
+
+    def test_watch_overrides_parsed(self):
+        file = _write_profile("watch_portal.json", {
+            "watch": {"recheck_interval": 15, "max_interval": 120, "network_events": False},
+        })
+        try:
+            profile = load_profile(file)
+        finally:
+            file.unlink(missing_ok=True)
+        self.assertEqual(profile.watch["recheck_interval"], 15)
+        self.assertEqual(profile.watch["max_interval"], 120)
+        self.assertFalse(profile.watch["network_events"])
+
+    def test_watch_partial_override_keeps_defaults(self):
+        file = _write_profile("partial_watch_portal.json", {
+            "watch": {"recheck_interval": 30},
+        })
+        try:
+            profile = load_profile(file)
+        finally:
+            file.unlink(missing_ok=True)
+        self.assertEqual(profile.watch["recheck_interval"], 30)
+        self.assertEqual(profile.watch["max_interval"], 300)
+        self.assertTrue(profile.watch["network_events"])
+
+    def test_legacy_profile_without_watch_section(self):
+        """旧 portal.json 没有 watch 段时仍能加载，并使用默认参数。"""
+        file = _write_profile("legacy_watch_portal.json", {"portal": {"host": "10.0.0.2"}})
+        try:
+            profile = load_profile(file)
+        finally:
+            file.unlink(missing_ok=True)
+        self.assertEqual(profile.watch, DEFAULT_PROFILE["watch"])
+
+
 class RetryPolicyTests(unittest.TestCase):
     def test_backoff_sequence(self):
         policy = RetryPolicy()

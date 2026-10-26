@@ -18,12 +18,19 @@ class AuthState(enum.Enum):
 
 
 class RetryPolicy:
-    """指数退避：60, 120, 240, 300, 300... 秒；恢复后立即重置。"""
+    """失败退避 60/120/240/300... 秒；成功后的复核间隔由 recheck_interval 控制。
+
+    两个间隔分离：
+    - recheck_interval：在线时多久复核一次（越短越快发现掉线，默认 60 秒）；
+    - cap：失败退避上限（默认 300 秒）。
+    """
 
     _BACKOFF = (60, 120, 240, 300)
 
-    def __init__(self, cap: int = 300):
-        self.cap = cap
+    def __init__(self, cap: int = 300, recheck_interval: int | None = None):
+        self.cap = max(1, int(cap))
+        # 成功后到下一次复核的间隔；不传时与 cap 一致，兼容旧行为
+        self.recheck_interval = max(1, int(recheck_interval)) if recheck_interval else self.cap
         self.failures = 0
         self.next_attempt = 0.0
 
@@ -34,8 +41,8 @@ class RetryPolicy:
     def on_success(self, now: float | None = None) -> None:
         now = now if now is not None else time.monotonic()
         self.failures = 0
-        # 成功后进入低频复核，而不是频繁重登
-        self.next_attempt = now + self.cap
+        # 成功后进入低频复核；recheck_interval 比失败退避短，便于尽快发现掉线
+        self.next_attempt = now + self.recheck_interval
 
     def on_failure(self, now: float | None = None) -> None:
         now = now if now is not None else time.monotonic()

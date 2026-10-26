@@ -56,6 +56,12 @@
     "success": { "contains": ["Portal协议认证成功", "\"result\":1"], "jsonp": true },
     "failure": { "contains": ["AC认证失败", "密码错误"] }
   },
+  "watch": {
+    "_comment": "自动保护运行参数。recheck_interval=在线时复核间隔（秒，5-3600，默认 60）：调小能更快发现掉线，但探测流量略增；max_interval=失败退避上限（秒，5-3600，默认 300）：连续失败后最多等这么久再重试；network_events=是否监听 Windows 网络变化事件（网卡连上/断开、切换 WiFi 时立即复核，事件不可用时自动退化为按 recheck_interval 轮询）。GUI 的「自动保护」分组只暴露前两项，network_events 保留默认 true 即可。",
+    "recheck_interval": 60,
+    "max_interval": 300,
+    "network_events": true
+  },
   "online_check": {
     "path_field": "data.portalOnlineUserInfo.result",
     "success_value": "success"

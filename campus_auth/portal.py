@@ -71,6 +71,15 @@ DEFAULT_PROFILE: dict[str, Any] = {
         "success": {"contains": [], "jsonp": False},
         "failure": {"contains": []},
     },
+    # 自动保护（watch）运行参数：
+    # recheck_interval 在线时的复核间隔（秒）：越短越早发现掉线，探测流量略增；
+    # max_interval 失败退避上限（秒）；network_events 是否监听 Windows 网络变化事件
+    # （网卡连上/断开、换 WiFi 时立即复核，失败自动退化为按 recheck_interval 轮询）。
+    "watch": {
+        "recheck_interval": 60,
+        "max_interval": 300,
+        "network_events": True,
+    },
     "online_check": {"path_field": "data.portalOnlineUserInfo.result", "success_value": "success"},
     "error_markers": {
         "auth_fail": ["认证失败", "auth.fail"],
@@ -125,6 +134,14 @@ class PortalProfile:
         "service_suffix": {}, "extra_params": {}, "ip_field": "",
         "success": {"contains": [], "jsonp": False},
         "failure": {"contains": []},
+    })
+    # 自动保护运行参数（旧 portal.json 没有该段时使用默认值）：
+    # recheck_interval 在线复核间隔（越短越快发现掉线）；max_interval 失败退避上限；
+    # network_events 是否用 Windows 网络变化事件触发立即复核。
+    watch: dict[str, Any] = field(default_factory=lambda: {
+        "recheck_interval": 60,
+        "max_interval": 300,
+        "network_events": True,
     })
 
     @property
@@ -183,6 +200,7 @@ def load_profile(path: str | Path | None) -> PortalProfile:
     service_fields = workflow.get("service_fields", {"session_id": "sessionId", "service": "serviceName"})
     simple_login = data.get("simple_login", {})
     login = data.get("login", {})
+    watch = data.get("watch", {})
     online = data["online_check"]
     conn = data.get("connectivity", {})
 
@@ -208,4 +226,5 @@ def load_profile(path: str | Path | None) -> PortalProfile:
         service_fields=service_fields,
         simple_login=simple_login,
         login=login,
+        watch=watch,
     )

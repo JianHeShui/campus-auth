@@ -168,7 +168,12 @@ _FIELD_LABELS = {
     "online_check.success_value": "在线成功值",
     "connectivity.probe_hosts": "外网探测站点（逗号分隔）",
     "connectivity.probe_port": "外网探测端口",
+    "watch.recheck_interval": "在线复核间隔（秒，5-3600）",
+    "watch.max_interval": "失败重试上限（秒，5-3600）",
 }
+
+# 以「秒」为单位的自动保护间隔字段：走 _parse_seconds（去空格 + 整数 + 5-3600 校验）
+_SECONDS_FIELDS = ("watch.recheck_interval", "watch.max_interval")
 
 
 def _get(data: dict, dotted: str, default=""):
@@ -247,6 +252,22 @@ def _apply_address(data: dict, address: str) -> None:
     portal["host"] = host
     portal["port"] = port
     portal["scheme"] = scheme
+
+
+def _parse_seconds(value: str, label: str) -> int:
+    """秒数输入校验：必须是 5-3600 的整数秒（自动保护间隔类配置）。
+
+    与 cli.py 的 _INTERVAL_MIN/_INTERVAL_MAX 保持一致，避免 GUI 允许的值
+    被命令行侧再次钳制、导致用户看到的配置与实际运行行为不一致。
+    """
+    text = (value or "").strip()
+    try:
+        seconds = int(text)
+    except (TypeError, ValueError) as exc:
+        raise ValueError(f"{label} 必须是整数秒（当前：{value!r}）") from exc
+    if not 5 <= seconds <= 3600:
+        raise ValueError(f"{label} 超出 5-3600 秒范围（当前：{seconds}）")
+    return seconds
 
 
 # 预设门户模板：傻瓜式用户只需选类型 + 填地址，其余字段自动填好。
@@ -978,6 +999,9 @@ class ConfigWindow:
         row += 3
         row = self._section(parent, "外网探测", "", row)
         self._form(parent, ["connectivity.probe_hosts", "connectivity.probe_port"], row)
+        row += 2
+        row = self._section(parent, "自动保护", "复核越频繁越早发现掉线；失败后最多等「失败重试上限」再重试", row)
+        self._form(parent, list(_SECONDS_FIELDS), row)
 
     def _build_advanced(self, parent: ttk.Frame) -> None:
         row = self._section(parent, "会话", "sessionId 的获取方式", 0)
@@ -1186,12 +1210,21 @@ class ConfigWindow:
             return None, f"配置解析失败：{exc}"
 
     def _collect(self) -> dict:
-        """从表单组装 portal.json 结构（输入非法时抛 ValueError）。"""
-        data = json.loads(json.dumps(DEFAULT_PROFILE, ensure_ascii=False))
+        """从表单组装 portal.json 结构（输入非法时抛 ValueError）。
+
+        以「上次加载的完整画像」为基底，只覆盖表单里出现的字段：这样表单没有
+        暴露的字段（watch.network_events、login 段等）不会被保存动作重置为默认值。
+        """
+        base = getattr(self, "_loaded_data", None)
+        if not isinstance(base, dict):
+            base = DEFAULT_PROFILE
+        data = json.loads(json.dumps(base, ensure_ascii=False))
         for key, var in self.vars.items():
             value = var.get().strip()
             if key in ("portal.port", "connectivity.probe_port"):
                 _set(data, key, self._parse_port(value, _FIELD_LABELS.get(key, key)))
+            elif key in _SECONDS_FIELDS:
+                _set(data, key, _parse_seconds(value, _FIELD_LABELS.get(key, key)))
             else:
                 _set(data, key, value)
         data["auth_mode"] = self.mode_var.get()
@@ -1226,6 +1259,12 @@ class ConfigWindow:
 
     def _load(self, data: dict) -> None:
         """把 dict 填进表单。"""
+        # 记录完整画像作为 _collect 的基底：保留表单未暴露的字段（见 _collect 注释）
+        try:
+            self._loaded_data = (json.loads(json.dumps(data, ensure_ascii=False))
+                                 if isinstance(data, dict) else None)
+        except (TypeError, ValueError):
+            self._loaded_data = None
         auth = data.get("auth_mode", "workflow")
         self.mode_var.set(auth)
         # 门户地址框是唯一数据源：显示完整地址（含协议与非默认端口），保证往返不丢配置
@@ -1243,6 +1282,7 @@ class ConfigWindow:
             value = _get(data, key, "")
             if key == "connectivity.probe_hosts" and isinstance(value, list):
                 value = ",".join(value)
+            # watch.* 等数值字段（int）在这里由 str() 统一转成表单文本，_collect 再解析回 int
             self.vars[key].set(str(value))
         if self.extra_fields_text is not None:
             self.extra_fields_text.delete("1.0", "end")

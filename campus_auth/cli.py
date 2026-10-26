@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import argparse
 import sys
+import threading
 import time
 
 from . import __version__
@@ -11,6 +12,42 @@ from .config import ConfigError, load_credentials, save_credentials
 from .network import NetworkAdapter, enumerate_interfaces, pick_adapter, trigger_windows_ncsi_refresh
 from .portal import ProfileError, load_profile
 from .state import AuthState, RetryPolicy
+
+# 自动保护默认参数（可被 portal.json 的 watch 段 / 命令行覆盖）
+DEFAULT_RECHECK_INTERVAL = 60   # 在线复核间隔（秒）：越短越快发现掉线
+DEFAULT_MAX_INTERVAL = 300      # 失败退避上限（秒）
+_INTERVAL_MIN = 5
+_INTERVAL_MAX = 3600
+
+
+def _clamp_interval(value, fallback: int) -> int:
+    """把秒数限制在合理范围（5–3600 秒），非法值回退默认。"""
+    try:
+        number = int(value)
+    except (TypeError, ValueError):
+        return fallback
+    return min(max(number, _INTERVAL_MIN), _INTERVAL_MAX)
+
+
+def _resolve_watch_settings(args: argparse.Namespace, profile) -> tuple[int, int, bool]:
+    """解析自动保护参数：命令行 > portal.json 的 watch 段 > 内置默认。
+
+    返回 (recheck_interval, max_interval, network_events)。
+    """
+    cfg = getattr(profile, "watch", None)
+    if not isinstance(cfg, dict):
+        cfg = {}
+    recheck_arg = getattr(args, "recheck_interval", None)
+    recheck = (_clamp_interval(recheck_arg, DEFAULT_RECHECK_INTERVAL) if recheck_arg is not None
+               else _clamp_interval(cfg.get("recheck_interval"), DEFAULT_RECHECK_INTERVAL))
+    max_arg = getattr(args, "max_interval", None)
+    max_interval = (_clamp_interval(max_arg, DEFAULT_MAX_INTERVAL) if max_arg is not None
+                    else _clamp_interval(cfg.get("max_interval"), DEFAULT_MAX_INTERVAL))
+    if getattr(args, "no_network_events", False):
+        network_events = False
+    else:
+        network_events = bool(cfg.get("network_events", True))
+    return recheck, max_interval, network_events
 
 
 def _build_client(args: argparse.Namespace) -> Client:
@@ -110,24 +147,45 @@ def cmd_watch(args: argparse.Namespace) -> int:
         return 0
     write_pid_file()  # 记录 PID，供托盘 / 配置界面停止本进程
 
+    wake = threading.Event()
+    watcher = None
     try:
         # 开机自启模式：先延时，等网卡与网络就绪
         if getattr(args, "startup", False) and getattr(args, "delay", 0) > 0:
             time.sleep(args.delay)
 
         client = _build_client(args)
+        recheck, max_interval, network_events = _resolve_watch_settings(args, client.profile)
         try:
             credentials = load_credentials()
         except ConfigError as exc:
             print(f"配置错误: {exc}", file=sys.stderr)
             return 2
 
-        policy = RetryPolicy(cap=args.max_interval)
-        interval = args.interval
+        policy = RetryPolicy(cap=max_interval, recheck_interval=recheck)
+        interval = float(args.interval)
         was_online = False
+
+        # 方案 B：监听 Windows 网络变化（掉线/换网时立即复核，不必等下一个周期）。
+        # 监听不可用时静默退化为普通轮询，不影响认证主流程。
+        if network_events:
+            from .netwatch import NetworkChangeWatcher
+            watcher = NetworkChangeWatcher(wake.set)
+            if not watcher.start():
+                watcher = None
+                if not args.quiet:
+                    print("[自动保护] 网络变化监听不可用，按复核间隔轮询", flush=True)
+
         while True:
+            # 网络变化事件：立即复核一次（防抖已由监听线程处理）
+            if wake.is_set():
+                wake.clear()
+                policy.reset()
             if not policy.should_try():
-                time.sleep(1)
+                # 最多等 1 秒，网络变化可提前唤醒
+                if wake.wait(1.0):
+                    wake.clear()
+                    policy.reset()
                 continue
             try:
                 result = client.authenticate(credentials)
@@ -155,9 +213,14 @@ def cmd_watch(args: argparse.Namespace) -> int:
                 else:
                     was_online = False
                     policy.on_failure()
-            time.sleep(interval)
+            # 等待下一轮；网络变化事件可提前唤醒（立即复核）
+            if wake.wait(interval):
+                wake.clear()
+                policy.reset()
         return 1
     finally:
+        if watcher is not None:
+            watcher.stop()
         clear_pid_file()
 
 
@@ -211,7 +274,12 @@ def build_parser() -> argparse.ArgumentParser:
 
     p_watch = sub.add_parser("watch", help="自动保护：后台持续守护、断线自动重连（需手动停止）")
     p_watch.add_argument("--interval", type=float, default=15, help="轮询间隔秒数")
-    p_watch.add_argument("--max-interval", type=int, default=300, help="退避上限秒数")
+    p_watch.add_argument("--max-interval", type=int, default=None,
+                         help="失败退避上限秒数（默认读 portal.json 的 watch.max_interval，未配置为 300）")
+    p_watch.add_argument("--recheck-interval", type=int, default=None,
+                         help="在线复核间隔秒数（默认读 watch.recheck_interval，未配置为 60；越小越快发现掉线）")
+    p_watch.add_argument("--no-network-events", action="store_true",
+                         help="禁用 Windows 网络变化监听（默认启用：掉线/换网时立即复核）")
     p_watch.add_argument("--startup", action="store_true", help="开机自启模式（配合 --delay 延时启动）")
     p_watch.add_argument("--delay", type=float, default=10, help="开机自启延时秒数（等网络就绪）")
     p_watch.set_defaults(func=cmd_watch)
