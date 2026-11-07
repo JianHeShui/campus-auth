@@ -13,11 +13,11 @@ from __future__ import annotations
 C = {
     # 中性灰阶（冷调、低饱和）
     "n0": "#FFFFFF",    # 卡片、输入框表面
-    "n25": "#F3F5F8",   # 应用窗口底色
+    "n25": "#F5F7FA",   # 应用窗口底色
     "n50": "#F0F3F7",   # 次级面板、hover 底
     "n100": "#EDEFF2",  # 分区底、按钮按下底、禁用底
     "n150": "#E4E7EB",  # 分隔线
-    "n200": "#DFE5ED",  # 默认 1px 描边
+    "n200": "#DCE3EC",  # 默认 1px 描边
     "n300": "#C6CCD3",  # 强描边 / 输入框 hover 边
     "n400": "#8A929C",  # 占位符、禁用文字
     "n500": "#6B7480",  # 辅助文字
@@ -26,7 +26,7 @@ C = {
     "n800": "#18283D",  # 标题
     "n900": "#14181D",  # 最高对比 / Toast 深底
     # 强调色（唯一）
-    "accent": "#285DE5",
+    "accent": "#245FD6",
     "accent_hover": "#204FC8",
     "accent_active": "#1942AD",
     "accent_subtle": "#EAF0FF",

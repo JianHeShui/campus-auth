@@ -9,7 +9,7 @@ import tkinter as tk
 from pathlib import Path
 from tkinter import filedialog, messagebox, ttk
 
-from . import CONFIG_WINDOW_TITLE
+from . import CONFIG_WINDOW_TITLE, __version__
 from .portal import DEFAULT_PROFILE, deep_merge
 from .theme import C as _TC
 
@@ -42,9 +42,10 @@ C = {
     "success": _TC["success"],
     "warning": _TC["warning"],
     "white": _TC["white"],
-    "rail": "#142339",
-    "rail_muted": "#A8B8CD",
-    "rail_line": "#2C3D54",
+    "rail": "#17263A",
+    "rail_muted": "#B7C8DE",
+    "rail_line": "#415573",
+    "rail_active": "#A9CBFF",
 }
 F = {
     "ui": "Microsoft YaHei UI",
@@ -85,11 +86,12 @@ class RoundedButton(tk.Canvas):
         self._gradient_to = gradient_to  # 保留参数兼容旧调用，本方案不使用渐变
         self._font = (F["ui"], font_size, "bold" if bold else "normal")
         self._hovered = False
+        self._pressed = False
 
         import tkinter.font as tkfont
         font_obj = tkfont.Font(family=F["ui"], size=font_size, weight="bold" if bold else "normal")
-        self._btn_w = width if width else (font_obj.measure(text) + padx * 2)
-        self._btn_h = height
+        self._btn_w = max(width or 0, font_obj.measure(text) + padx * 2)
+        self._btn_h = max(height, font_obj.metrics("linespace") + 10)
         surface = (ttk.Style().lookup(parent.cget("style") or "TFrame", "background")
                    if isinstance(parent, ttk.Widget) else parent.cget("background"))
         super().__init__(parent, width=self._btn_w, height=self._btn_h, bg=surface or C["page"],
@@ -98,7 +100,7 @@ class RoundedButton(tk.Canvas):
         self.bind("<Configure>", self._on_configure)
         self.bind("<Enter>", self._on_enter)
         self.bind("<Leave>", self._on_leave)
-        self.bind("<ButtonPress-1>", self._on_enter)
+        self.bind("<ButtonPress-1>", self._on_press)
         self.bind("<ButtonRelease-1>", self._on_release)
         self.bind("<Return>", lambda e: self._invoke())
         self.bind("<space>", lambda e: self._invoke())
@@ -107,11 +109,13 @@ class RoundedButton(tk.Canvas):
         self._repaint()
 
     def _fill_now(self):
+        if self._pressed and self._hovered:
+            return C["primary_active"] if self._fill == C["primary"] else C["pressed"]
         return self._hover_fill if self._hovered else self._fill
 
     def _border_now(self):
         if self.focus_get() == self:
-            return C["primary"]
+            return C["rail_active"] if self._fill == C["primary"] else C["primary"]
         return self._hover_border if self._hovered else self._border
 
     def _repaint(self) -> None:
@@ -139,7 +143,13 @@ class RoundedButton(tk.Canvas):
         self._hovered = False
         self._repaint()
 
+    def _on_press(self, event) -> None:
+        self._pressed = True
+        self.focus_set()
+        self._on_enter()
+
     def _on_release(self, event=None) -> None:
+        self._pressed = False
         self._hovered = False
         self._repaint()
         if event is None or (0 <= event.x < self.winfo_width() and 0 <= event.y < self.winfo_height()):
@@ -323,11 +333,11 @@ TUTORIAL_TEXT = """这个工具帮你自动登录校园网：配置一次，即�
    点「自动探测类型」自动识别；
    也可手动选 锐捷 / 华三 CAS / 通用
 
-③ 一键生成配置
-   点「一键生成配置」，接口细节自动填好
+③ 应用模板
+   点「应用模板」填好所选类型的接口参数
 
-④ 开始自动保护（持续守护）
-   点底部「开始自动保护」，填写账号、密码、运营商。
+④ 开启后台守护
+   点底部「开启后台守护」，按提示填写账号、密码、运营商。
    程序会在后台持续守护、断线自动重连（关闭窗口不影响），
    不是单次登录；再次点击会自动重启保护。
 
@@ -399,6 +409,7 @@ class ConfigWindow:
         self.root = root
         self.profile_path = Path(profile_path) if profile_path else None
         self.vars: dict[str, tk.StringVar] = {}
+        self.field_entries: dict[str, ttk.Entry] = {}
         self.extra_fields_text: tk.Text | None = None
         self.error_markers_text: tk.Text | None = None
         self.template_var: tk.StringVar | None = None
@@ -406,28 +417,37 @@ class ConfigWindow:
         self.advanced_visible = False
         self.detect_btn = None
         self.fetch_btn = None
+        self._account_ready = False
+        self._status_job = None
 
         root.title(CONFIG_WINDOW_TITLE)
         # 按屏幕可用区自适应：小屏（1366×768 等）不至于超出屏幕 / 按钮被裁
         screen_w, screen_h = root.winfo_screenwidth(), root.winfo_screenheight()
         width = min(1180, screen_w - 80)
-        height = min(780, screen_h - 100)
+        scale = root.winfo_fpixels("1i") / 96
+        height = min(780, max(660, round(520 * scale)), screen_h - 100)
         root.geometry(f"{width}x{height}")
         root.minsize(min(960, width), min(620, height))
         root.configure(bg=C["page"])
 
         self._apply_theme()
-        self._build_sidebar()
         self.content = tk.Frame(root, bg=C["page"])
-        self.content.pack(side="left", fill="both", expand=True)
+        self.content.pack(fill="both", expand=True)
         self._build_header()
-        self._build_footer()
+        self._build_connection_strip()
         self._build_quick_start()
         self._build_advanced_toggle()
         self._build_notebook()
+        self._build_footer()
+        self.quick_wrap.pack(fill="both", expand=True, padx=24, pady=(0, 16))
         # 记忆上次输入：优先加载已保存的 portal.json，否则用默认画像
         saved = self._read_saved_profile()
-        self._load(saved if saved else DEFAULT_PROFILE)
+        self._load(saved if saved is not None else DEFAULT_PROFILE)
+        self._portal_saved = saved is not None
+        self._remember_form()
+        self._poll_connection()
+        root.bind("<Destroy>", self._cancel_status_poll, add="+")
+        root.bind("<Configure>", self._fit_connection_header, add="+")
         self.refresh_preview()
         # 首次使用自动弹出教程
         if not TUTORIAL_MARKER.exists():
@@ -554,55 +574,132 @@ class ConfigWindow:
                         bordercolor=C["page"], lightcolor=C["border_strong"],
                         darkcolor=C["border_strong"], relief="flat", borderwidth=0,
                         arrowsize=10, gripcount=0)
-        style.map("Vertical.TScrollbar", background=[("active", C["faint"])])
+        style.map("Vertical.TScrollbar",
+                  background=[("disabled", C["page"]), ("active", C["faint"])],
+                  lightcolor=[("disabled", C["page"])], darkcolor=[("disabled", C["page"])])
 
     # ---- 结构 ----
 
-    def _build_sidebar(self) -> None:
-        from . import __version__
-        rail = tk.Frame(self.root, bg=C["rail"], width=208)
-        rail.pack(side="left", fill="y")
-        rail.pack_propagate(False)
-        mark = tk.Canvas(rail, width=48, height=48, bg=C["rail"], highlightthickness=0)
-        mark.pack(anchor="w", padx=26, pady=(20, 12))
-        _round_rect(mark, 1, 1, 47, 47, 13, fill=C["primary"], outline="")
-        mark.create_line(13, 31, 24, 15, 35, 31, fill=C["white"], width=2)
-        for x, y in ((13, 31), (24, 15), (35, 31)):
-            mark.create_oval(x - 3, y - 3, x + 3, y + 3, fill=C["white"], outline="")
-        tk.Label(rail, text="Campus Auth", bg=C["rail"], fg=C["white"],
-                 font=("Segoe UI", 12, "bold")).pack(anchor="w", padx=26)
-        tk.Label(rail, text="校园网 · 自动连接", bg=C["rail"], fg=C["rail_muted"],
-                 font=(F["ui"], 10)).pack(anchor="w", padx=26, pady=(6, 16))
-        tk.Frame(rail, bg=C["rail_line"], height=1).pack(fill="x", padx=26)
-        for number, title, hint in (("01", "配置门户", "选择类型与认证地址"),
-                                    ("02", "填写账号", "首次开启时填写"),
-                                    ("03", "开启保护", "后台守护，断线重连")):
-            row = tk.Frame(rail, bg=C["rail"])
-            row.pack(fill="x", padx=26, pady=(10, 0))
-            tk.Label(row, text=number, bg=C["rail"], fg="#89ABFF",
-                     font=("Segoe UI", 10, "bold")).pack(anchor="w")
-            tk.Label(row, text=title, bg=C["rail"], fg=C["white"],
-                     font=(F["ui"], 11, "bold")).pack(anchor="w", pady=(4, 3))
-            tk.Label(row, text=hint, bg=C["rail"], fg=C["rail_muted"],
-                     font=(F["ui"], 9)).pack(anchor="w")
-        bottom = tk.Frame(rail, bg=C["rail"])
-        bottom.pack(side="bottom", fill="x", padx=26, pady=(6, 14))
-        link = tk.Label(bottom, text="GitHub  ↗", bg=C["rail"], fg=C["rail_muted"],
-                        cursor="hand2", font=("Segoe UI", 10))
-        link.pack(anchor="w")
-        link.bind("<Button-1>", lambda e: _open_url(GITHUB_URL))
-        tk.Label(bottom, text=f"免费开源  /  v{__version__}", bg=C["rail"], fg=C["rail_muted"],
-                 font=(F["ui"], 9)).pack(anchor="w", pady=(8, 0))
-
     def _build_header(self) -> None:
-        header = tk.Frame(self.content, bg=C["page"])
-        header.pack(fill="x", padx=28, pady=(22, 16))
-        RoundedButton(header, "使用教程  ↗", self._show_tutorial, font_size=9,
-                      padx=16, height=34).pack(side="right", anchor="n")
-        tk.Label(header, text="连接设置", bg=C["page"], fg=C["title"],
-                 font=(F["ui"], 20, "bold")).pack(anchor="w")
-        tk.Label(header, text="配置一次，让校园网保持连接。", bg=C["page"], fg=C["muted"],
-                 font=(F["ui"], 10)).pack(anchor="w", pady=(6, 0))
+        header = tk.Frame(self.content, bg=C["card"])
+        header.pack(fill="x")
+        bar = tk.Frame(header, bg=C["card"])
+        bar.pack(fill="x", padx=24, pady=8)
+        mark = tk.Canvas(bar, width=30, height=30, bg=C["card"], highlightthickness=0)
+        mark.pack(side="left", padx=(0, 9))
+        _round_rect(mark, 1, 1, 29, 29, 8, fill=C["primary"], outline="")
+        mark.create_line(8, 20, 15, 9, 22, 20, fill=C["white"], width=1.6)
+        for x, y in ((8, 20), (15, 9), (22, 20)):
+            mark.create_oval(x - 1.8, y - 1.8, x + 1.8, y + 1.8, fill=C["white"], outline="")
+        tk.Label(bar, text="Campus Auth", bg=C["card"], fg=C["title"],
+                 font=("Segoe UI", 13, "bold")).pack(side="left")
+        tk.Label(bar, text=f"v{__version__}", bg=C["subtle"], fg=C["muted"],
+                 font=("Segoe UI", 9), padx=7, pady=2).pack(side="left", padx=10)
+        tools = ttk.Menubutton(bar, text="工具", direction="below", takefocus=True, width=4)
+        tools.pack(side="right")
+        menu = tk.Menu(tools, tearoff=False)
+        menu.add_command(label="导入配置…", command=self.load_file)
+        menu.add_command(label="导出配置…", command=self.save_file)
+        menu.add_command(label="恢复默认", command=self.reset)
+        menu.add_separator()
+        menu.add_command(label="GitHub", command=lambda: _open_url(GITHUB_URL))
+        tools.configure(menu=menu)
+        RoundedButton(bar, "使用教程", self._show_tutorial, font_size=9,
+                      padx=12, height=30).pack(side="right", padx=(0, 8))
+        tk.Frame(header, bg=C["hairline"], height=1).pack(fill="x")
+
+    def _build_connection_strip(self) -> None:
+        section = tk.Frame(self.content, bg=C["page"])
+        section.pack(fill="x", padx=24, pady=(12, 14))
+        self.connection_title = tk.Label(section, text="校园网认证设置", bg=C["page"], fg=C["title"],
+                                         font=(F["ui"], 21, "bold"))
+        self.connection_title.pack(anchor="w", pady=(0, 9))
+        self.connection_strip = strip = tk.Frame(section, bg=C["rail"], padx=16, pady=17)
+        strip.pack(fill="x")
+        self.portal_status = tk.StringVar()
+        self.account_status = tk.StringVar()
+        self.guard_status = tk.StringVar()
+        for index, (title, status) in enumerate((
+            ("门户配置", self.portal_status),
+            ("校园网账号", self.account_status),
+            ("后台守护", self.guard_status),
+        )):
+            column = index * 2
+            strip.columnconfigure(column, weight=1, uniform="connection")
+            node = tk.Frame(strip, bg=C["rail"])
+            node.grid(row=0, column=column)
+            icon = tk.Canvas(node, width=34, height=34, bg=C["rail"], highlightthickness=0)
+            icon.pack(side="left", padx=(0, 9))
+            ring = icon.create_oval(2, 2, 32, 32, outline=C["rail_line"], width=1.5)
+            ink = C["rail_muted"]
+            if index == 0:
+                icon.create_arc(8, 12, 26, 29, start=42, extent=96, style="arc", outline=ink, width=1.5)
+                icon.create_arc(12, 16, 22, 26, start=40, extent=100, style="arc", outline=ink, width=1.5)
+                icon.create_oval(16, 21, 18, 23, fill=ink, outline="")
+            elif index == 1:
+                icon.create_oval(14, 9, 20, 15, outline=ink, width=1.5)
+                icon.create_arc(10, 17, 24, 29, start=5, extent=170, style="arc", outline=ink, width=1.5)
+            else:
+                icon.create_rectangle(10, 10, 24, 20, outline=ink, width=1.5)
+                icon.create_line(17, 20, 17, 24, fill=ink, width=1.5)
+                icon.create_line(13, 24, 21, 24, fill=ink, width=1.5)
+                self.guard_ring = icon, ring
+            copy = tk.Frame(node, bg=C["rail"])
+            copy.pack(side="left")
+            tk.Label(copy, text=title, bg=C["rail"], fg=C["white"],
+                     font=(F["ui"], 10, "bold"), padx=0).pack(anchor="w")
+            label = tk.Label(copy, textvariable=status, bg=C["rail"], fg=ink, font=(F["ui"], 9), padx=0)
+            label.pack(anchor="w", pady=(2, 0))
+            if index == 2:
+                self.guard_label = label
+            if index < 2:
+                tk.Frame(strip, bg=C["rail_line"], width=38, height=1).grid(row=0, column=column + 1)
+
+    def _fit_connection_header(self, event=None) -> None:
+        if event is not None and event.widget is not self.root:
+            return
+        scale = self.root.winfo_fpixels("1i") / 96
+        compact = self.advanced_visible or self.root.winfo_height() < 440 * scale
+        if compact == getattr(self, "_compact_header", None):
+            return
+        self._compact_header = compact
+        self.connection_strip.configure(pady=7 if compact else 17)
+        if compact:
+            self.connection_title.pack_forget()
+            self.quick_intro.pack_forget()
+        else:
+            self.connection_title.pack(anchor="w", pady=(0, 9), before=self.connection_strip)
+            self.quick_intro.pack(anchor="w", pady=(4, 18), before=self.address_label)
+
+    def _remember_form(self) -> None:
+        self._clean_form = self._collect_safe()[0], self.template_var.get()
+
+    def _refresh_connection(self) -> None:
+        from .daemon import is_running
+
+        running = is_running()
+        current, _ = self._collect_safe()
+        dirty = (current, self.template_var.get()) != self._clean_form
+        self.portal_status.set("有未保存修改" if dirty else ("配置已保存" if self._portal_saved else "待保存配置"))
+        self.account_status.set("已配置" if self._account_ready else "按需提示填写")
+        self.guard_status.set("进程运行中" if running else "未开启")
+        self.footer_hint.set("重启时保存并应用配置。" if running else "保存门户配置，缺少账号时提示填写。")
+        highlight = C["rail_active"] if running else C["rail_muted"]
+        self.guard_label.configure(fg=highlight)
+        icon, ring = self.guard_ring
+        icon.itemconfigure(ring, outline=highlight if running else C["rail_line"])
+        caption = "重启后台守护" if running else "开启后台守护"
+        if self.start_btn._text != caption:
+            self.start_btn._text = caption
+            self.start_btn._repaint()
+
+    def _poll_connection(self) -> None:
+        self._refresh_connection()
+        self._status_job = self.root.after(1500, self._poll_connection)
+
+    def _cancel_status_poll(self, event) -> None:
+        if event.widget is self.root and self._status_job is not None:
+            self.root.after_cancel(self._status_job)
 
     def _show_tutorial(self) -> None:
         """弹出使用教程窗口。"""
@@ -654,56 +751,77 @@ class ConfigWindow:
                 child.destroy()
 
     def _build_quick_start(self) -> None:
-        """傻瓜式快速开始：选类型 + 填地址，一键生成。"""
-        wrap = ttk.Frame(self.content, style="Page.TFrame")
-        self.quick_wrap = wrap
-        wrap.pack(fill="x", padx=28)
-        # 1px 发丝描边：外层描边色 Frame + 内层白底卡片留 1px
-        border = tk.Frame(wrap, bg=C["border"])
-        border.pack(fill="x")
-        card = ttk.Frame(border, style="Card.TFrame", padding=(20, 16))
-        card.pack(fill="both", expand=True, padx=1, pady=1)
+        self.quick_wrap = ttk.Frame(self.content, style="Page.TFrame")
+        self.quick_canvas, work = self._scroll_card(self.quick_wrap, padding=24, surface=C["page"])
+        self.quick_portal = portal = ttk.Frame(work, style="Card.TFrame")
+        self.quick_preferences = preferences = ttk.Frame(work, style="Card.TFrame")
+        self.quick_divider = tk.Frame(work, bg=C["hairline"], width=1, height=1)
+        work.bind("<Configure>", self._layout_quick_start, add="+")
 
-        ttk.Label(card, text="门户配置", style="Section.TLabel").grid(row=0, column=0, columnspan=4, sticky="w")
-        ttk.Label(card, text="选择学校的认证类型，填写或自动获取门户地址。",
-                  style="CardMuted.TLabel").grid(row=1, column=0, columnspan=4, sticky="w", pady=(2, 10))
+        ttk.Label(portal, text="门户设置", style="Section.TLabel").pack(anchor="w")
+        self.quick_intro = ttk.Label(portal, text="填写学校的登录地址，再选择认证类型",
+                                     style="CardMuted.TLabel", wraplength=520)
+        self.quick_intro.pack(anchor="w", pady=(4, 18))
 
-        # 门户类型（独占一行）
-        ttk.Label(card, text="门户类型", style="Card.TLabel").grid(row=2, column=0, sticky="w", padx=(0, 10), pady=4)
-        self.template_var = tk.StringVar(value=list(PORTAL_TEMPLATES.keys())[0])
-        ttk.Combobox(card, textvariable=self.template_var, values=list(PORTAL_TEMPLATES.keys()),
-                     state="readonly", width=26).grid(row=2, column=1, sticky="w", pady=4)
-
-        # 门户地址（独占一行）
-        ttk.Label(card, text="门户地址", style="Card.TLabel").grid(row=3, column=0, sticky="w", padx=(0, 10), pady=4)
+        self.address_label = ttk.Label(portal, text="门户地址", style="Card.TLabel")
+        self.address_label.pack(anchor="w", pady=(6, 0))
+        address_row = ttk.Frame(portal, style="Card.TFrame")
+        address_row.pack(fill="x", pady=(6, 16))
         self.address_var = tk.StringVar(value=_format_address(DEFAULT_PROFILE))
-        address_entry = ttk.Entry(card, textvariable=self.address_var, width=34)
-        address_entry.grid(row=3, column=1, columnspan=2, sticky="we", pady=4)
-        _bind_context_menu(address_entry)
-        card.columnconfigure(1, weight=1)
-        self.fetch_btn = RoundedButton(card, "自动获取", self._auto_fill_address, font_size=9, width=88)
-        self.fetch_btn.grid(row=3, column=3, padx=(8, 0), pady=4)
+        self.address_entry = ttk.Entry(address_row, textvariable=self.address_var, width=12, font=(F["ui"], 10))
+        self.address_entry.pack(side="left", fill="x", expand=True, padx=(0, 8))
+        _bind_context_menu(self.address_entry)
+        self.fetch_btn = RoundedButton(address_row, "自动获取", self._auto_fill_address,
+                                       font_size=9, padx=13, height=36)
+        self.fetch_btn.pack(side="right", fill="y")
 
-        # 按钮行（独占一行）
-        btn_row = tk.Frame(card, bg=C["card"])
-        btn_row.grid(row=4, column=0, columnspan=4, sticky="w", pady=(10, 2))
-        self.detect_btn = RoundedButton(btn_row, "自动探测类型", self._auto_detect,
-                                        font_size=9, width=120)
-        self.detect_btn.pack(side="left", padx=(0, 8))
-        RoundedButton(btn_row, "一键生成配置", self._quick_generate,
-                      fill=C["primary"], fg=C["white"], border=C["primary"],
-                      hover_fill=C["primary_hover"], hover_border=C["primary_hover"], gradient_to=C["primary_hover"],
-                      bold=True, width=150).pack(side="left")
+        ttk.Label(portal, text="认证模板", style="Card.TLabel").pack(anchor="w")
+        type_row = ttk.Frame(portal, style="Card.TFrame")
+        type_row.pack(fill="x", pady=(6, 18))
+        self.template_var = tk.StringVar(value=next(iter(PORTAL_TEMPLATES)))
+        ttk.Combobox(type_row, textvariable=self.template_var, values=list(PORTAL_TEMPLATES),
+                     state="readonly", width=15, font=(F["ui"], 10)).pack(
+                         side="left", fill="x", expand=True, padx=(0, 8))
+        self.detect_btn = RoundedButton(type_row, "自动探测类型", self._auto_detect,
+                                        font_size=9, padx=13, height=36)
+        self.detect_btn.pack(side="left", fill="y", padx=(0, 8))
+        self.apply_template_btn = RoundedButton(
+            type_row, "应用模板", self._quick_generate, fill=C["accent_subtle"], fg=C["primary"],
+            border=_TC["accent_border"], hover_fill=C["subtle"], font_size=9, padx=13, height=36,
+        )
+        self.apply_template_btn.pack(side="left", fill="y")
+        ttk.Label(portal, text="选择新模板后，先应用，再开启后台守护。",
+                  style="CardMuted.TLabel", wraplength=520).pack(anchor="w")
 
-        # 开机自启
+        ttk.Label(preferences, text="运行偏好", style="Section.TLabel").pack(anchor="w")
+        ttk.Label(preferences, text="管理本机启动方式与校园网账号。",
+                  style="CardMuted.TLabel", wraplength=230).pack(anchor="w", pady=(3, 12))
+
         from .startup import startup_enabled
         self.autostart_var = tk.BooleanVar(value=startup_enabled())
-        tk.Checkbutton(card, text="开机自启（开机后一直运行并自动保护）",
-                       variable=self.autostart_var, command=self._toggle_autostart,
-                       bg=C["card"], fg=C["text"], activebackground=C["card"],
-                       activeforeground=C["text"], selectcolor=C["card"],
-                       font=(F["ui"], 10), highlightthickness=0).grid(
-            row=5, column=0, columnspan=4, sticky="w", pady=(4, 0))
+        ttk.Checkbutton(preferences, text="开机自启", variable=self.autostart_var,
+                        command=self._toggle_autostart, style="Card.TCheckbutton").pack(anchor="w")
+        ttk.Label(preferences, text="随 Windows 启动并开启后台守护。",
+                  style="CardMuted.TLabel", wraplength=230).pack(anchor="w", pady=(4, 12))
+        RoundedButton(preferences, "账号设置", self._reenter_credentials, font_size=9,
+                      padx=13, height=34).pack(anchor="w")
+
+    def _layout_quick_start(self, event) -> None:
+        work = event.widget
+        # 按实际 DPI 缩放断点，小窗口使用单列，字段通过同一个滚动区访问。
+        wide = event.width >= max(930, round(660 * self.root.winfo_fpixels("1i") / 96))
+        if wide == getattr(self, "_quick_wide", None):
+            return
+        self._quick_wide = wide
+        work.columnconfigure(0, weight=2 if wide else 1, uniform="setup" if wide else "")
+        work.columnconfigure(2, weight=1 if wide else 0, uniform="setup" if wide else "")
+        self.quick_portal.grid(row=0, column=0, sticky="nsew")
+        if wide:
+            self.quick_divider.grid(row=0, column=1, sticky="ns", padx=22, pady=0)
+            self.quick_preferences.grid(row=0, column=2, sticky="nsew")
+        else:
+            self.quick_divider.grid(row=1, column=0, sticky="ew", padx=0, pady=16)
+            self.quick_preferences.grid(row=2, column=0, sticky="nsew")
 
     def _toggle_autostart(self) -> None:
         """开机自启开关：写入/删除注册表启动项。"""
@@ -715,45 +833,24 @@ class ConfigWindow:
             self.autostart_var.set(startup_enabled())
 
     def _build_advanced_toggle(self) -> None:
-        """高级设置折叠开关。"""
-        bar = tk.Frame(self.content, bg=C["page"])
-        self.advanced_bar = bar
-        bar.pack(fill="x", padx=28, pady=(14, 0))
-        self.advanced_btn = RoundedButton(bar, "高级设置 ▸", self._toggle_advanced, font_size=9)
-        self.advanced_btn.pack(side="left")
-        tk.Label(bar, text="接口、会话与重连策略", bg=C["page"], fg=C["muted"],
-                 font=(F["ui"], 9)).pack(side="left", padx=12)
-        self.overview = tk.Frame(self.content, bg=C["page"])
-        self.overview.pack(fill="both", expand=True, padx=30, pady=(14, 0))
-        hint = tk.Frame(self.overview, bg=C["page"])
-        tk.Label(hint, text="准备好后，开启自动保护", bg=C["page"], fg=C["title"],
-                 font=(F["ui"], 12, "bold")).pack(anchor="w")
-        tk.Label(hint, text="配置会自动保存。关闭此窗口后，后台仍会持续守护。\n"
-                 "需要暂停时，在系统托盘菜单中选择「停止自动保护」。",
-                 bg=C["page"], fg=C["muted"], justify="left", font=(F["ui"], 10)).pack(
-                     anchor="w", pady=(8, 0))
-        # 辅助说明只在空间充足时显示，避免缩小窗口后截断文案。
-        def fit_hint(event):
-            if event.height >= hint.winfo_reqheight() + 8:
-                hint.place(x=0, y=0)
-            else:
-                hint.place_forget()
-
-        self.overview.bind("<Configure>", fit_hint)
+        tk.Frame(self.quick_preferences, bg=C["hairline"], height=1).pack(fill="x", pady=14)
+        self.advanced_btn = RoundedButton(self.quick_preferences, "高级设置  ›", self._toggle_advanced,
+                                          font_size=9, padx=13, height=34)
+        self.advanced_btn.pack(anchor="w")
+        ttk.Label(self.quick_preferences, text="接口、会话与重连策略",
+                  style="CardMuted.TLabel").pack(anchor="w", pady=(5, 0))
 
     def _toggle_advanced(self) -> None:
         self.advanced_visible = not self.advanced_visible
         if self.advanced_visible:
-            self.overview.pack_forget()
             self.quick_wrap.pack_forget()
-            self.advanced_wrap.pack(fill="both", expand=True, padx=28, pady=(8, 12))
-            self.advanced_btn._text = "高级设置 ▾"
+            self.advanced_wrap.pack(fill="both", expand=True, padx=24, pady=(0, 16))
+            self.back_btn.focus_set()
         else:
             self.advanced_wrap.pack_forget()
-            self.quick_wrap.pack(fill="x", padx=28, before=self.advanced_bar)
-            self.overview.pack(fill="both", expand=True, padx=30, pady=(14, 0))
-            self.advanced_btn._text = "高级设置 ▸"
-        self.advanced_btn._repaint()
+            self.quick_wrap.pack(fill="both", expand=True, padx=24, pady=(0, 16))
+            self.root.after_idle(self.advanced_btn.focus_set)
+        self._fit_connection_header()
 
     def _apply_template_and_address(self, template_name: str | None, address: str | None) -> None:
         """按模板 + 地址生成配置数据并回填表单（不弹窗）。"""
@@ -775,7 +872,12 @@ class ConfigWindow:
         """按所选模板生成配置，并自动探测门户类型；与所选不一致时提醒。"""
         selected = self.template_var.get() if self.template_var else None
         address = self.address_var.get().strip() if self.address_var else ""
-        self._apply_template_and_address(selected, address)
+        try:
+            self._apply_template_and_address(selected, address)
+        except ValueError as exc:
+            messagebox.showerror("门户地址有误", str(exc), parent=self.root)
+            self.address_entry.focus_set()
+            return
         if not address:
             messagebox.showinfo(
                 "已生成",
@@ -803,7 +905,7 @@ class ConfigWindow:
         return "mismatch"
 
     def _on_generate_probe_done(self, result: dict) -> None:
-        """「一键生成配置」的探测回调：类型不一致时询问是否改用探测结果。"""
+        """「应用模板」的探测回调：类型不一致时询问是否改用探测结果。"""
         selected = self.template_var.get() if self.template_var else None
         detected = result.get("template")
         state = self._detect_consistency(selected, detected)
@@ -813,7 +915,7 @@ class ConfigWindow:
             messagebox.showinfo(
                 "已生成",
                 f"配置已按「{selected}」生成，自动探测确认门户类型一致。{meta}\n\n"
-                "点「导出配置」保存副本，或直接「开始自动保护」。")
+                "可从「工具」导出配置，也可直接开启后台守护。")
             return
         if state == "mismatch":
             switch = messagebox.askyesno(
@@ -951,10 +1053,17 @@ class ConfigWindow:
 
     def _build_notebook(self) -> None:
         self.advanced_wrap = ttk.Frame(self.content, style="Page.TFrame")
-        # 默认不 pack，由「高级设置」开关控制
+        bar = tk.Frame(self.advanced_wrap, bg=C["page"])
+        bar.pack(fill="x", pady=(0, 6))
+        self.back_btn = RoundedButton(bar, "‹  返回连接设置", self._toggle_advanced,
+                                      font_size=9, padx=14, height=32)
+        self.back_btn.pack(side="left")
+        tk.Label(bar, text="高级设置", bg=C["page"], fg=C["title"],
+                 font=(F["ui"], 12, "bold")).pack(side="left", padx=14)
 
         self.notebook = ttk.Notebook(self.advanced_wrap)
         self.notebook.pack(fill="both", expand=True)
+        self.notebook.enable_traversal()
 
         self.tab_basic = self._make_tab("基本信息")
         self.tab_workflow = self._make_tab("工作流接口")
@@ -971,16 +1080,25 @@ class ConfigWindow:
     def _make_tab(self, title: str) -> ttk.Frame:
         outer = ttk.Frame(self.notebook, style="Page.TFrame")
         self.notebook.add(outer, text=title)
-        canvas = tk.Canvas(outer, bg=C["card"], highlightthickness=1,
-                           highlightbackground=C["border"], bd=0)
+        _, card = self._scroll_card(outer, padding=20)
+        card.columnconfigure(1, weight=1)
+        return card
+
+    def _scroll_card(self, outer: ttk.Frame, padding: int, surface=C["card"]) -> tuple[tk.Canvas, ttk.Frame]:
+        canvas = tk.Canvas(outer, bg=surface, highlightthickness=1,
+                           highlightbackground=C["border"] if surface == C["card"] else surface, bd=0)
         scrollbar = ttk.Scrollbar(outer, orient="vertical", command=canvas.yview)
         scrollbar.pack(side="right", fill="y")
         canvas.pack(side="left", fill="both", expand=True)
-        card = ttk.Frame(canvas, style="Card.TFrame", padding=20)
+        card = ttk.Frame(canvas, style="Card.TFrame", padding=padding)
         window = canvas.create_window(0, 0, window=card, anchor="nw")
-        canvas.configure(yscrollcommand=scrollbar.set)
+        def update_scrollbar(first, last):
+            scrollbar.set(first, last)
+            scrollbar.state(["disabled" if float(first) <= 0 and float(last) >= 1 else "!disabled"])
+
+        canvas.configure(yscrollcommand=update_scrollbar)
         card.bind("<Configure>", lambda e: canvas.configure(scrollregion=canvas.bbox("all")))
-        canvas.bind("<Configure>", lambda e: canvas.itemconfigure(window, width=e.width))
+        canvas.bind("<Configure>", lambda e: canvas.itemconfigure(window, width=max(1, e.width - 2)))
         # 仅在鼠标位于此页时滚动；不使用 bind_all，避免干扰其他窗口。
         def wheel(event):
             if card.winfo_reqheight() > canvas.winfo_height():
@@ -991,7 +1109,7 @@ class ConfigWindow:
             # Combobox 保留滚轮切换选项。
             if not isinstance(widget, ttk.Combobox):
                 widget.bind("<MouseWheel>", wheel, add="+")
-            if isinstance(widget, (ttk.Entry, ttk.Combobox, tk.Text)):
+            if isinstance(widget, (ttk.Entry, ttk.Checkbutton, tk.Text, RoundedButton)):
                 widget.bind("<FocusIn>", reveal, add="+")
             for child in widget.winfo_children():
                 bind_wheel(child)
@@ -1006,8 +1124,7 @@ class ConfigWindow:
 
         canvas.bind("<MouseWheel>", wheel)
         card.after_idle(lambda: bind_wheel(card))
-        card.columnconfigure(1, weight=1)
-        return card
+        return canvas, card
 
     def _section(self, parent: ttk.Frame, title: str, subtitle: str, row: int) -> int:
         ttk.Label(parent, text=title, style="Section.TLabel").grid(
@@ -1026,7 +1143,8 @@ class ConfigWindow:
                 row=r, column=0, sticky="w", padx=(0, 14), pady=4)
             var = tk.StringVar()
             self.vars[key] = var
-            entry = ttk.Entry(parent, textvariable=var)
+            entry = ttk.Entry(parent, textvariable=var, font=(F["ui"], 10))
+            self.field_entries[key] = entry
             entry.grid(row=r, column=1, sticky="we", pady=4)
             _bind_context_menu(entry)
 
@@ -1044,7 +1162,8 @@ class ConfigWindow:
         row = self._section(parent, "认证模式", "workflow=锐捷工作流；cas=华三CAS加密；simple=通用直接登录", row)
         self.mode_var = tk.StringVar(value="workflow")
         ttk.Label(parent, text="认证模式", style="Card.TLabel").grid(row=row, column=0, sticky="w", padx=(0, 14), pady=4)
-        mode_box = ttk.Combobox(parent, textvariable=self.mode_var, values=MODES, state="readonly", width=18)
+        mode_box = ttk.Combobox(parent, textvariable=self.mode_var, values=MODES,
+                                state="readonly", width=18, font=(F["ui"], 10))
         mode_box.grid(row=row, column=1, sticky="w", pady=4)
         row += 1
         row = self._section(parent, "门户地址",
@@ -1101,29 +1220,24 @@ class ConfigWindow:
         self.error_markers_text.grid(row=row, column=1, sticky="we", pady=4)
 
     def _build_footer(self) -> None:
-        # 先预留底部空间，缩小窗口或展开高级设置时主操作始终可见。
         footer = tk.Frame(self.content, bg=C["card"])
         footer.pack(side="bottom", fill="x")
         self.footer_widget = footer
         tk.Frame(footer, bg=C["hairline"], height=1).pack(fill="x")
-        tools = tk.Frame(footer, bg=C["card"])
-        tools.pack(fill="x", padx=28, pady=(12, 10))
-        for label, command in (("导入配置", self.load_file), ("导出配置", self.save_file),
-                               ("恢复默认", self.reset)):
-            RoundedButton(tools, label, command, font_size=9, padx=14, height=30).pack(
-                side="left", padx=(0, 8))
-        RoundedButton(tools, "修改账号密码", self._reenter_credentials,
-                      font_size=9, padx=14, height=30).pack(side="right")
         row = tk.Frame(footer, bg=C["card"])
-        row.pack(fill="x", padx=28, pady=(0, 16))
-        RoundedButton(row, "开始自动保护  →", self._start_autologin,
-                           fill=C["primary"], fg=C["white"], border=C["primary"],
-                           hover_fill=C["primary_hover"], hover_border=C["primary_hover"],
-                           bold=True, width=184, height=42).pack(side="right")
-        tk.Label(row, text="持续守护 · 断线自动重连", bg=C["card"], fg=C["title"],
-                 font=(F["ui"], 10, "bold")).pack(anchor="w", pady=(0, 3))
-        tk.Label(row, text="开启时自动保存配置，再次开启会重启保护。", bg=C["card"], fg=C["muted"],
-                 font=(F["ui"], 9)).pack(anchor="w")
+        row.pack(fill="x", padx=24, pady=12)
+        self.start_btn = RoundedButton(
+            row, "开启后台守护", self._start_autologin,
+            fill=C["primary"], fg=C["white"], border=C["primary"],
+            hover_fill=C["primary_hover"], hover_border=C["primary_hover"],
+            bold=True, padx=24, width=188, height=44,
+        )
+        self.start_btn.pack(side="right", padx=(12, 0))
+        tk.Label(row, text="后台守护 · 断线重连", bg=C["card"], fg=C["title"],
+                 font=(F["ui"], 10, "bold"), padx=0).pack(anchor="w")
+        self.footer_hint = tk.StringVar()
+        tk.Label(row, textvariable=self.footer_hint, bg=C["card"], fg=C["muted"],
+                 font=(F["ui"], 9), padx=0, justify="left", wraplength=460).pack(anchor="w", pady=(3, 0))
 
     # ---- 开始自动保护 ----
 
@@ -1138,29 +1252,43 @@ class ConfigWindow:
         except OSError as exc:
             messagebox.showerror("保存失败", f"无法保存账号密码：{exc}")
             return
+        self._account_ready = True
+        self._refresh_connection()
         messagebox.showinfo("已更新", "账号密码已更新，下次自动保护将使用新密码。")
 
     def _start_autologin(self) -> None:
         """保存配置 → 确认账号密码 → 启动（或重启）独立后台保护进程。"""
+        if self.template_var.get() != self._applied_template:
+            messagebox.showwarning("模板尚未应用", "请先点击「应用模板」，再开启后台守护。", parent=self.root)
+            if self.advanced_visible:
+                self._toggle_advanced()
+            self.root.after_idle(self.apply_template_btn.focus_set)
+            return
         # 1) 保存配置到工具目录（先做输入校验，避免把非法配置写进 portal.json）
         data, error = self._collect_safe()
         if error:
-            messagebox.showerror("配置有误", f"请先修正以下问题再开始自动保护：\n\n{error}")
+            messagebox.showerror("配置有误", error, parent=self.root)
+            self._focus_invalid_field(error)
             return
         portal_file = _tool_root() / "portal.json"
         try:
             portal_file.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
         except OSError as exc:
-            messagebox.showerror("保存失败", f"无法写入 portal.json：{exc}")
+            messagebox.showerror("配置未保存", f"无法写入 portal.json：{exc}", parent=self.root)
             return
+        self._portal_saved = True
+        self._remember_form()
+        self._refresh_connection()
 
         # 2) 确认账号密码
         from .config import ConfigError, load_credentials, save_credentials
         try:
             load_credentials()
         except ConfigError:
+            self._account_ready = False
             credentials = self._prompt_credentials()
             if credentials is None:
+                self.start_btn.focus_set()
                 return
             try:
                 save_credentials(credentials)
@@ -1168,6 +1296,8 @@ class ConfigWindow:
                 messagebox.showerror("保存失败", f"无法保存账号密码：{exc}")
                 return
 
+        self._account_ready = True
+        self._refresh_connection()
         # 3) 启动（或重启）独立保护进程：若已在保护中，先停止再启动，让新配置生效
         from .daemon import ALREADY_RUNNING, STARTED, is_running, start_status, stop
         was_running = is_running()
@@ -1183,15 +1313,16 @@ class ConfigWindow:
                     "本次新配置尚未生效。")
                 return
         status = start_status()
+        self._refresh_connection()
         if status == ALREADY_RUNNING:
             messagebox.showerror(
                 "启动失败",
-                "检测到另一个保护进程已抢先启动，请稍后重试。")
+                "配置已保存。检测到另一个守护进程已启动，请稍后重试。")
             return
         if status != STARTED:
             messagebox.showerror(
                 "启动失败",
-                "无法启动后台自动保护进程。\n\n"
+                "配置已保存，但未能启动后台守护。\n\n"
                 "请确认程序目录完整，或改用托盘菜单「开启自动保护」重试。")
             return
         from .startup import startup_enabled
@@ -1214,31 +1345,46 @@ class ConfigWindow:
                 f"配置已保存到：{portal_file}\n"
                 f"账号密码保存在：{_credentials_file_hint()}")
 
+    def _focus_invalid_field(self, error: str) -> None:
+        if "门户地址" in error:
+            if self.advanced_visible:
+                self._toggle_advanced()
+            self.root.after_idle(self.address_entry.focus_set)
+            return
+        entry = next((widget for key, widget in self.field_entries.items()
+                      if error.startswith(_FIELD_LABELS.get(key, key))), None)
+        if entry is None and "额外固定字段" in error:
+            entry = self.extra_fields_text
+        if entry is not None:
+            if not self.advanced_visible:
+                self._toggle_advanced()
+            self.notebook.select(entry.master.master.master)
+            self.root.after_idle(entry.focus_set)
+
     def _prompt_credentials(self):
         """弹窗输入账号密码与运营商，返回 Credentials 或 None。"""
         from .client import Credentials
         top = tk.Toplevel(self.root)
         top.title("输入校园网账号")
-        top.geometry("380x310")
         top.configure(bg=C["card"])
         top.transient(self.root)
         top.grab_set()
 
-        tk.Label(top, text="校园网账号", bg=C["card"], fg=C["text"], font=(F["ui"], 10)).pack(anchor="w", padx=22, pady=(18, 4))
-        user = tk.Entry(top, width=34)
-        user.pack(padx=22, pady=(0, 10))
+        ttk.Label(top, text="校园网账号", style="Section.TLabel").pack(anchor="w", padx=22, pady=(18, 4))
+        user = ttk.Entry(top, width=32, font=(F["ui"], 10))
+        user.pack(fill="x", padx=22, pady=(0, 10))
         _bind_context_menu(user)
 
         tk.Label(top, text="校园网密码", bg=C["card"], fg=C["text"], font=(F["ui"], 10)).pack(anchor="w", padx=22, pady=(0, 4))
-        pwd = tk.Entry(top, width=34, show="*")
-        pwd.pack(padx=22, pady=(0, 10))
+        pwd = ttk.Entry(top, width=32, show="•", font=(F["ui"], 10))
+        pwd.pack(fill="x", padx=22, pady=(0, 10))
         _bind_context_menu(pwd)
 
         tk.Label(top, text="运营商（可输入或选择）", bg=C["card"], fg=C["text"], font=(F["ui"], 10)).pack(anchor="w", padx=22, pady=(0, 4))
         operators = ("中国移动", "中国联通", "中国电信", "校园网")
         service_var = tk.StringVar(value=operators[0])
-        service = ttk.Combobox(top, textvariable=service_var, values=operators, width=32)
-        service.pack(padx=22, pady=(0, 14))
+        service = ttk.Combobox(top, textvariable=service_var, values=operators, width=32, font=(F["ui"], 10))
+        service.pack(fill="x", padx=22, pady=(0, 14))
 
         result: dict = {}
 
@@ -1253,11 +1399,13 @@ class ConfigWindow:
             top.destroy()
 
         row = tk.Frame(top, bg=C["card"])
-        row.pack(fill="x", padx=22)
+        row.pack(fill="x", padx=22, pady=(0, 18))
         RoundedButton(row, "取消", cancel).pack(side="left")
         RoundedButton(row, "确定", ok, fill=C["primary"], fg=C["white"], border=C["primary"],
                       hover_fill=C["primary_hover"], hover_border=C["primary_hover"], gradient_to=C["primary_hover"], bold=True).pack(side="right")
 
+        top.bind("<Escape>", lambda event: cancel())
+        user.focus_set()
         self.root.wait_window(top)
         if not result or not result.get("username") or not result.get("password"):
             return None
@@ -1353,6 +1501,7 @@ class ConfigWindow:
                 self.template_var.set("通用（简单登录）")
             else:
                 self.template_var.set("锐捷 SAM+（工作流）")
+            self._applied_template = self.template_var.get()
         for key in self.vars:
             value = _get(data, key, "")
             if key == "connectivity.probe_hosts" and isinstance(value, list):
